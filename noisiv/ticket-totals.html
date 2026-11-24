@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ticket Totals</title>
+<!--
+  VantaChem / NoisiV - Ticket Totals calculator for the Jotform "Sales Order Form".
+
+  What it does: reads the order lines the rep has entered, looks up each product's
+  price per gallon, and works out
+    - sales for every order line            (mode = lines)
+    - gallons and sales for every product,
+      plus the ticket total                 (mode = products)
+  The result is handed back to the form, so it prints on the Field Ticket,
+  shows on the review screen and goes out in the order email.
+
+  This page holds NO prices and NO customer names. Prices arrive from the form
+  itself (the "book" setting), which the nightly Customer Book sync keeps up to date.
+
+  Settings (set on the form field, not here):
+    mode           lines | products
+    customerField  id of the "Select Customer" field
+    totalField     (products mode, optional) id of a text field to receive the ticket total
+    book           JSON: { "Customer name": { "q": "<order-lines field id>", "p": { "Product": price, ... } }, ... }
+-->
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #222; }
+  #wrap { padding: 1px; }
+  .empty { color: #8b8f88; font-size: 13px; padding: 4px 0 6px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #4F5251; }
+  th { background: #D9D9D9; color: #222; font-size: 11px; font-weight: bold; text-transform: uppercase;
+       letter-spacing: .4px; text-align: left; padding: 7px 9px; white-space: nowrap; }
+  td { padding: 8px 9px; border-top: 1px solid #e6e8e2; font-size: 14px; vertical-align: top; }
+  tr:nth-child(even) td { background: #f6f7f4; }
+  th.n, td.n { text-align: right; white-space: nowrap; }
+  td.m { font-weight: bold; color: #5f7c1f; }
+  tr.total td { background: #eef3e1 !important; border-top: 2px solid #799B2C; font-weight: bold; font-size: 15px; }
+  tr.total td.m { color: #3f5512; }
+  .warn { color: #b42318; font-size: 12px; padding-top: 6px; }
+  @media (max-width: 480px) {
+    th, td { padding: 6px 6px; font-size: 12px; }
+    th { font-size: 10px; letter-spacing: 0; }
+    tr.total td { font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="empty">Totals appear here once order lines are entered.</div></div>
+<script>
+(function () {
+  'use strict';
+
+  var cfg = { mode: 'products', customerField: '17', totalField: '', book: {} };
+  var lastValue = null;      // last value handed to the form
+  var lastTotal = null;      // last ticket total written to totalField
+  var lastHeight = 0;
+  var timer = null;
+  var W = window.JFCustomWidget;
+
+  /* ---------- small helpers ---------- */
+  function text(v) { return v === null || v === undefined ? '' : String(v); }
+  function clean(v) { return text(v).replace(/\s+/g, ' ').trim(); }
+  function num(v) {
+    var n = parseFloat(text(v).replace(/[^0-9.\-]/g, ''));
+    return isFinite(n) ? n : 0;
+  }
+  function round2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
+  function commas(s) { return s.replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function fmtQty(n) {
+    var s = (Math.round(n * 100) / 100).toFixed(2).replace(/\.?0+$/, '');
+    var parts = s.split('.');
+    return commas(parts[0]) + (parts[1] ? '.' + parts[1] : '');
+  }
+  function fmtMoney(n) {
+    var parts = round2(n).toFixed(2).split('.');
+    return '$' + commas(parts[0]) + '.' + parts[1];
+  }
+  function fmtPrice(n) {
+    // at least 2 decimals, up to 4 when the price needs them
+    var s = n.toFixed(4).replace(/0{1,2}$/, '');
+    var parts = s.split('.');
+    return '$' + commas(parts[0]) + '.' + parts[1];
+  }
+  function esc(s) {
+    return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function parseMaybeJson(v) {
+    if (typeof v !== 'string') return v;
+    var s = v.trim();
+    if (!s || (s.charAt(0) !== '[' && s.charAt(0) !== '{')) return v;
+    try { return JSON.parse(s); } catch (e) { return v; }
+  }
+
+  /* ---------- settings ---------- */
+  function readSettings() {
+    var s = {};
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    cfg.mode = clean(s.mode).toLowerCase() === 'lines' ? 'lines' : 'products';
+    cfg.customerField = clean(s.customerField) || '17';
+    cfg.totalField = clean(s.totalField);
+    var book = parseMaybeJson(s.book);
+    cfg.book = book && typeof book === 'object' ? book : {};
+  }
+
+  function bookEntry(customer) {
+    var name = clean(customer);
+    if (!name) return null;
+    if (cfg.book[name]) return cfg.book[name];
+    var low = name.toLowerCase(), found = null;
+    Object.keys(cfg.book).some(function (k) {
+      if (clean(k).toLowerCase() === low) { found = cfg.book[k]; return true; }
+      return false;
+    });
+    return found;
+  }
+  function priceOf(entry, product) {
+    var p = entry && entry.p ? entry.p : {};
+    var name = clean(product);
+    if (Object.prototype.hasOwnProperty.call(p, name)) return num(p[name]);
+    var low = name.toLowerCase(), found = null;
+    Object.keys(p).some(function (k) {
+      if (clean(k).toLowerCase() === low) { found = num(p[k]); return true; }
+      return false;
+    });
+    return found;
+  }
+
+  /* ---------- reading the form ---------- */
+  function valueOf(resp, id) {
+    var list = resp && (resp.data || resp.value || resp.fields);
+    if (!list || !list.length) return '';
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i] || {};
+      if (text(item.selector) === text(id) || text(item.id) === text(id)) return item.value;
+    }
+    return '';
+  }
+  // "600-CO\nBayswater" -> "Bayswater"
+  function customerFrom(v) {
+    v = parseMaybeJson(v);
+    if (v && typeof v === 'object') {
+      var vals = Array.isArray(v) ? v : Object.keys(v).map(function (k) { return v[k]; });
+      v = vals.join('\n');
+    }
+    var parts = text(v).split(/\r?\n/).map(clean).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  }
+  function rowsFrom(v) {
+    v = parseMaybeJson(v);
+    if (v && typeof v === 'object' && !Array.isArray(v) && v.value !== undefined) v = parseMaybeJson(v.value);
+    return Array.isArray(v) ? v : [];
+  }
+  function pick(row, names) {
+    var keys = Object.keys(row || {});
+    for (var i = 0; i < names.length; i++) {
+      for (var j = 0; j < keys.length; j++) {
+        if (clean(keys[j]).toLowerCase() === names[i]) return row[keys[j]];
+      }
+    }
+    return '';
+  }
+
+  /* ---------- the math ---------- */
+  function compute(entry, rows) {
+    var lines = [], byProduct = {}, order = [], missing = [];
+    rows.forEach(function (row) {
+      var product = clean(pick(row, ['product']));
+      var qtyRaw = clean(pick(row, ['qty delivered', 'qty', 'quantity', 'gallons']));
+      if (!product || !qtyRaw) return;                      // line not filled in yet
+      var gallons = num(qtyRaw);
+      var price = priceOf(entry, product);
+      var hasPrice = price !== null && price !== undefined;
+      var sales = hasPrice ? round2(gallons * price) : 0;
+      if (!hasPrice && missing.indexOf(product) === -1) missing.push(product);
+      lines.push({
+        costCenter: clean(pick(row, ['cost center'])),
+        product: product,
+        date: clean(pick(row, ['delivery date', 'date'])),
+        gallons: gallons, price: hasPrice ? price : null, sales: sales
+      });
+      if (!byProduct[product]) { byProduct[product] = { product: product, gallons: 0, price: hasPrice ? price : null, sales: 0 }; order.push(product); }
+      byProduct[product].gallons += gallons;
+      byProduct[product].sales = round2(byProduct[product].sales + sales);
+    });
+    var totalGallons = 0, totalSales = 0;
+    lines.forEach(function (l) { totalGallons += l.gallons; totalSales = round2(totalSales + l.sales); });
+    return {
+      lines: lines,
+      products: order.map(function (k) { return byProduct[k]; }),
+      totalGallons: totalGallons, totalSales: totalSales, missing: missing
+    };
+  }
+
+  /* ---------- what gets saved with the order ---------- */
+  function toValue(r) {
+    if (!r.lines.length) return '';
+    var out;
+    if (cfg.mode === 'lines') {
+      out = r.lines.map(function (l) {
+        return {
+          'Cost Center': l.costCenter,
+          'Product': l.product,
+          'Delivery Date': l.date,
+          'Gallons': fmtQty(l.gallons),
+          'Price per Gallon': l.price === null ? 'no price' : fmtPrice(l.price),
+          'Line Sales': l.price === null ? '' : fmtMoney(l.sales)
+        };
+      });
+    } else {
+      out = r.products.map(function (p) {
+        return {
+          'Product': p.product,
+          'Total Gallons': fmtQty(p.gallons),
+          'Price per Gallon': p.price === null ? 'no price' : fmtPrice(p.price),
+          'Total Sales': p.price === null ? '' : fmtMoney(p.sales)
+        };
+      });
+      out.push({ 'Product': 'TICKET TOTAL', 'Total Gallons': fmtQty(r.totalGallons), 'Price per Gallon': '', 'Total Sales': fmtMoney(r.totalSales) });
+    }
+    return JSON.stringify(out);
+  }
+
+  /* ---------- what the rep sees ---------- */
+  function render(r, customer) {
+    var wrap = document.getElementById('wrap');
+    var html;
+    if (!r.lines.length) {
+      html = '<div class="empty">' + (customer ? 'Totals appear here once order lines are entered.' : 'Pick a customer and enter order lines to see totals.') + '</div>';
+    } else if (cfg.mode === 'lines') {
+      html = '<table><tr><th>Cost Center</th><th>Product</th><th class="n">Gallons</th><th class="n">$/Gal</th><th class="n">Line Sales</th></tr>' +
+        r.lines.map(function (l) {
+          return '<tr><td>' + esc(l.costCenter) + '</td><td>' + esc(l.product) + '</td><td class="n">' + fmtQty(l.gallons) +
+            '</td><td class="n">' + (l.price === null ? '&ndash;' : fmtPrice(l.price)) + '</td><td class="n m">' + (l.price === null ? '&ndash;' : fmtMoney(l.sales)) + '</td></tr>';
+        }).join('') + '</table>';
+    } else {
+      html = '<table><tr><th>Product</th><th class="n">Total Gallons</th><th class="n">$/Gal</th><th class="n">Total Sales</th></tr>' +
+        r.products.map(function (p) {
+          return '<tr><td>' + esc(p.product) + '</td><td class="n">' + fmtQty(p.gallons) + '</td><td class="n">' +
+            (p.price === null ? '&ndash;' : fmtPrice(p.price)) + '</td><td class="n m">' + (p.price === null ? '&ndash;' : fmtMoney(p.sales)) + '</td></tr>';
+        }).join('') +
+        '<tr class="total"><td>Ticket Total</td><td class="n">' + fmtQty(r.totalGallons) + '</td><td class="n"></td><td class="n m">' + fmtMoney(r.totalSales) + '</td></tr></table>';
+    }
+    if (r.missing.length) {
+      html += '<div class="warn">No price on file for: ' + esc(r.missing.join(', ')) + '. Those lines are not in the totals.</div>';
+    }
+    if (wrap.innerHTML !== html) wrap.innerHTML = html;
+    var h = Math.ceil(wrap.getBoundingClientRect().height) + 4;
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+
+  /* ---------- one pass: read, work out, hand back ---------- */
+  function pass(done) {
+    var ids = [cfg.customerField];
+    // first the picked customer, then that customer's order-lines field
+    W.getFieldsValueById(ids, function (first) {
+      var customer = customerFrom(valueOf(first, cfg.customerField));
+      var entry = bookEntry(customer);
+      if (!entry || !entry.q) { finish({ lines: [], products: [], totalGallons: 0, totalSales: 0, missing: [] }, customer, done); return; }
+      W.getFieldsValueById([text(entry.q)], function (second) {
+        finish(compute(entry, rowsFrom(valueOf(second, entry.q))), customer, done);
+      });
+    });
+  }
+  function finish(result, customer, done) {
+    render(result, customer);
+    var value = toValue(result);
+    if (value !== lastValue) {
+      lastValue = value;
+      try { W.sendData({ value: value }); } catch (e) {}
+    }
+    if (cfg.mode === 'products' && cfg.totalField) {
+      var total = result.lines.length ? fmtMoney(result.totalSales) : '';
+      if (total !== lastTotal) {
+        lastTotal = total;
+        try { W.setFieldsValueById([{ id: cfg.totalField, value: total }]); } catch (e) {}
+      }
+    }
+    if (done) done(value);
+  }
+
+  /* ---------- wiring ---------- */
+  W.subscribe('ready', function () {
+    readSettings();
+    var onBuilder = false;
+    try { onBuilder = !!W.isWidgetOnBuilder(); } catch (e) {}
+    if (onBuilder) {
+      document.getElementById('wrap').innerHTML = '<div class="empty">Ticket totals (' + cfg.mode + ') are worked out here when the form is filled in.</div>';
+      return;
+    }
+    pass();
+    if (timer) clearInterval(timer);
+    timer = setInterval(function () { pass(); }, 1500);
+  });
+
+  W.subscribe('submit', function () {
+    var sent = false;
+    function send(value) {
+      if (sent) return;
+      sent = true;
+      W.sendSubmit({ valid: true, value: value === undefined || value === null ? (lastValue || '') : value });
+    }
+    try { pass(send); } catch (e) { send(lastValue || ''); }
+    setTimeout(function () { send(lastValue || ''); }, 1200);   // never hold the order up
+  });
+})();
+</script>
+</body>
+</html>
