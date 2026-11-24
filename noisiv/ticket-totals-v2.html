@@ -61,7 +61,11 @@
 
   /* ---------- small helpers ---------- */
   function text(v) { return v === null || v === undefined ? '' : String(v); }
-  function clean(v) { return text(v).replace(/\s+/g, ' ').trim(); }
+  // Jotform sometimes hands names over with "&" written as "&amp;" - treat both the same.
+  function unesc(s) {
+    return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'");
+  }
+  function clean(v) { return unesc(text(v)).replace(/\s+/g, ' ').trim(); }
   function num(v) {
     var n = parseFloat(text(v).replace(/[^0-9.\-]/g, ''));
     return isFinite(n) ? n : 0;
@@ -107,7 +111,6 @@
   function bookEntry(customer) {
     var name = clean(customer);
     if (!name) return null;
-    if (cfg.book[name]) return cfg.book[name];
     var low = name.toLowerCase(), found = null;
     Object.keys(cfg.book).some(function (k) {
       if (clean(k).toLowerCase() === low) { found = cfg.book[k]; return true; }
@@ -118,7 +121,6 @@
   function priceOf(entry, product) {
     var p = entry && entry.p ? entry.p : {};
     var name = clean(product);
-    if (Object.prototype.hasOwnProperty.call(p, name)) return num(p[name]);
     var low = name.toLowerCase(), found = null;
     Object.keys(p).some(function (k) {
       if (clean(k).toLowerCase() === low) { found = num(p[k]); return true; }
