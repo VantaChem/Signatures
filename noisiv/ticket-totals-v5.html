@@ -22,6 +22,11 @@
     mode           lines | products   (the "lines" field is kept out of sight on the form; it feeds the review screen)
     customerField  id of the "Select Customer" field
     totalField     (products mode, optional) id of a text field to receive the ticket total
+    resetField     (optional) element id of a form field to set back whenever the order changes,
+                   e.g. input_70 - the "Get a field signature now?" switch. Setting it back to
+                   resetValue hides the signature section, and the form then wipes the signature,
+                   so a signature can never ride along on an order that was changed after signing.
+    resetValue     the value to set it to (No)
     book           JSON: { "Customer name": { "q": "<order-lines field id>", "p": { "Product": price, ... } }, ... }
 -->
 <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
@@ -53,7 +58,9 @@
 (function () {
   'use strict';
 
-  var cfg = { mode: 'products', customerField: '17', totalField: '', book: {} };
+  var cfg = { mode: 'products', customerField: '17', totalField: '', resetField: '', resetValue: 'No', book: {} };
+  var lastPrint = null;      // what the order looked like last time (customer + lines)
+  var armedAt = 0;           // changes before this moment are the form loading, not the rep editing
   var lastValue = null;      // last value handed to the form
   var lastTotal = null;      // last ticket total written to totalField
   var lastHeight = 0;
@@ -104,6 +111,8 @@
     cfg.mode = clean(s.mode).toLowerCase() === 'lines' ? 'lines' : 'products';
     cfg.customerField = clean(s.customerField) || '17';
     cfg.totalField = clean(s.totalField);
+    cfg.resetField = clean(s.resetField);
+    cfg.resetValue = clean(s.resetValue) || 'No';
     var book = parseMaybeJson(s.book);
     cfg.book = book && typeof book === 'object' ? book : {};
   }
@@ -262,6 +271,15 @@
   function recompute(done) {
     var entry = state.customerKnown ? bookEntry(state.customer) : entryByQ(state.lastQ);
     var rows = entry ? rowsFrom(state.raw[text(entry.q)]) : [];
+    // Any real change to the customer or the lines switches the signature section back off.
+    var print = clean(state.customer) + '|' + JSON.stringify(rows.map(function (r) {
+      return [clean(pick(r, ['cost center'])), clean(pick(r, ['product'])), clean(pick(r, ['qty delivered', 'qty'])),
+              clean(pick(r, ['delivery date', 'date'])), clean(pick(r, ['comments']))];
+    }));
+    if (lastPrint !== null && print !== lastPrint && cfg.resetField && Date.now() > armedAt) {
+      try { W.storeToField(cfg.resetField, cfg.resetValue); } catch (e) {}
+    }
+    lastPrint = print;
     finish(compute(entry, rows), state.customerKnown ? state.customer : (entry ? 'x' : ''), done);
   }
   function listen() {
@@ -306,6 +324,7 @@
       document.getElementById('wrap').innerHTML = '<div class="empty">Ticket totals (' + cfg.mode + ') are worked out here when the form is filled in.</div>';
       return;
     }
+    armedAt = Date.now() + 3000;
     listen();
     recompute();
   });
