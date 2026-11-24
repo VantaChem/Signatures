@@ -27,6 +27,9 @@
                    resetValue hides the signature section, and the form then wipes the signature,
                    so a signature can never ride along on an order that was changed after signing.
     resetValue     the value to set it to (No)
+    signSwitch     (optional) element id of the "Get a field signature now?" switch, e.g. input_70
+    signDateField  (optional) id of the "Date Signed" text field. When the switch is set to Yes,
+                   today's date is written into it, so the signed date prints on the Field Ticket.
     book           JSON: { "Customer name": { "q": "<order-lines field id>", "p": { "Product": price, ... } }, ... }
 -->
 <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
@@ -58,7 +61,7 @@
 (function () {
   'use strict';
 
-  var cfg = { mode: 'products', customerField: '17', totalField: '', resetField: '', resetValue: 'No', book: {} };
+  var cfg = { mode: 'products', customerField: '17', totalField: '', resetField: '', resetValue: 'No', signSwitch: '', signDateField: '', book: {} };
   var lastPrint = null;      // what the order looked like last time (customer + lines)
   var armedAt = 0;           // changes before this moment are the form loading, not the rep editing
   var lastValue = null;      // last value handed to the form
@@ -113,6 +116,8 @@
     cfg.totalField = clean(s.totalField);
     cfg.resetField = clean(s.resetField);
     cfg.resetValue = clean(s.resetValue) || 'No';
+    cfg.signSwitch = clean(s.signSwitch);
+    cfg.signDateField = clean(s.signDateField);
     var book = parseMaybeJson(s.book);
     cfg.book = book && typeof book === 'object' ? book : {};
   }
@@ -292,6 +297,17 @@
         recompute();
       });
     });
+    if (cfg.signSwitch && cfg.signDateField) {
+      // the signature section was just opened: stamp today's date (MM-DD-YYYY, like the delivery dates)
+      W.listenFromField(cfg.signSwitch, 'change', function (v) {
+        if (clean(v).toLowerCase() !== 'yes') return;
+        var d = new Date(), two = function (n) { return (n < 10 ? '0' : '') + n; };
+        var today = two(d.getMonth() + 1) + '-' + two(d.getDate()) + '-' + d.getFullYear();
+        setTimeout(function () {
+          try { W.setFieldsValueById([{ id: cfg.signDateField, value: today }]); } catch (e) {}
+        }, 250);
+      });
+    }
     W.listenFromField('input_' + cfg.customerField, 'change', function (v) {
       state.customer = customerFrom(v);
       state.customerKnown = true;
