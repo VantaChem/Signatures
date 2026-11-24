@@ -57,7 +57,6 @@
   var lastValue = null;      // last value handed to the form
   var lastTotal = null;      // last ticket total written to totalField
   var lastHeight = 0;
-  var timer = null;
   var W = window.JFCustomWidget;
 
   /* ---------- small helpers ---------- */
@@ -129,15 +128,6 @@
   }
 
   /* ---------- reading the form ---------- */
-  function valueOf(resp, id) {
-    var list = resp && (resp.data || resp.value || resp.fields);
-    if (!list || !list.length) return '';
-    for (var i = 0; i < list.length; i++) {
-      var item = list[i] || {};
-      if (text(item.selector) === text(id) || text(item.id) === text(id)) return item.value;
-    }
-    return '';
-  }
   // "600-CO\nBayswater" -> "Bayswater"
   function customerFrom(v) {
     v = parseMaybeJson(v);
@@ -204,8 +194,8 @@
           'Cost Center': l.costCenter,
           'Product': l.product,
           'Delivery Date': l.date,
-          'Gallons': fmtQty(l.gallons),
-          'Price per Gallon': l.price === null ? 'no price' : fmtPrice(l.price),
+          'Qty': fmtQty(l.gallons),
+          'Price': l.price === null ? 'no price' : fmtPrice(l.price),
           'Line Sales': l.price === null ? '' : fmtMoney(l.sales)
         };
       });
@@ -213,12 +203,12 @@
       out = r.products.map(function (p) {
         return {
           'Product': p.product,
-          'Total Gallons': fmtQty(p.gallons),
-          'Price per Gallon': p.price === null ? 'no price' : fmtPrice(p.price),
+          'Total Qty': fmtQty(p.gallons),
+          'Price': p.price === null ? 'no price' : fmtPrice(p.price),
           'Total Sales': p.price === null ? '' : fmtMoney(p.sales)
         };
       });
-      out.push({ 'Product': 'TICKET TOTAL', 'Total Gallons': fmtQty(r.totalGallons), 'Price per Gallon': '', 'Total Sales': fmtMoney(r.totalSales) });
+      out.push({ 'Product': 'TICKET TOTAL', 'Total Qty': '', 'Price': '', 'Total Sales': fmtMoney(r.totalSales) });
     }
     return JSON.stringify(out);
   }
@@ -230,18 +220,18 @@
     if (!r.lines.length) {
       html = '<div class="empty">' + (customer ? 'Totals appear here once order lines are entered.' : 'Pick a customer and enter order lines to see totals.') + '</div>';
     } else if (cfg.mode === 'lines') {
-      html = '<table><tr><th>Cost Center</th><th>Product</th><th class="n">Gallons</th><th class="n">$/Gal</th><th class="n">Line Sales</th></tr>' +
+      html = '<table><tr><th>Cost Center</th><th>Product</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Line Sales</th></tr>' +
         r.lines.map(function (l) {
           return '<tr><td>' + esc(l.costCenter) + '</td><td>' + esc(l.product) + '</td><td class="n">' + fmtQty(l.gallons) +
             '</td><td class="n">' + (l.price === null ? '&ndash;' : fmtPrice(l.price)) + '</td><td class="n m">' + (l.price === null ? '&ndash;' : fmtMoney(l.sales)) + '</td></tr>';
         }).join('') + '</table>';
     } else {
-      html = '<table><tr><th>Product</th><th class="n">Total Gallons</th><th class="n">$/Gal</th><th class="n">Total Sales</th></tr>' +
+      html = '<table><tr><th>Product</th><th class="n">Total Qty</th><th class="n">Price</th><th class="n">Total Sales</th></tr>' +
         r.products.map(function (p) {
           return '<tr><td>' + esc(p.product) + '</td><td class="n">' + fmtQty(p.gallons) + '</td><td class="n">' +
             (p.price === null ? '&ndash;' : fmtPrice(p.price)) + '</td><td class="n m">' + (p.price === null ? '&ndash;' : fmtMoney(p.sales)) + '</td></tr>';
         }).join('') +
-        '<tr class="total"><td>Ticket Total</td><td class="n">' + fmtQty(r.totalGallons) + '</td><td class="n"></td><td class="n m">' + fmtMoney(r.totalSales) + '</td></tr></table>';
+        '<tr class="total"><td>Ticket Total</td><td class="n"></td><td class="n"></td><td class="n m">' + fmtMoney(r.totalSales) + '</td></tr></table>';
     }
     if (r.missing.length) {
       html += '<div class="warn">No price on file for: ' + esc(r.missing.join(', ')) + '. Those lines are not in the totals.</div>';
@@ -251,17 +241,38 @@
     if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
   }
 
-  /* ---------- one pass: read, work out, hand back ---------- */
-  function pass(done) {
-    var ids = [cfg.customerField];
-    // first the picked customer, then that customer's order-lines field
-    W.getFieldsValueById(ids, function (first) {
-      var customer = customerFrom(valueOf(first, cfg.customerField));
-      var entry = bookEntry(customer);
-      if (!entry || !entry.q) { finish({ lines: [], products: [], totalGallons: 0, totalSales: 0, missing: [] }, customer, done); return; }
-      W.getFieldsValueById([text(entry.q)], function (second) {
-        finish(compute(entry, rowsFrom(valueOf(second, entry.q))), customer, done);
+  /* ---------- keeping up with the form ----------
+     The form tells this page every time the customer or an order-lines block changes.
+     (Order-lines blocks report changes because the form's hidden "Total Qty" calculation uses them.) */
+  var state = { customer: '', customerKnown: false, lastQ: '', raw: {} };
+
+  function entryByQ(q) {
+    var found = null;
+    Object.keys(cfg.book).some(function (k) {
+      if (text(cfg.book[k].q) === text(q)) { found = cfg.book[k]; return true; }
+      return false;
+    });
+    return found;
+  }
+  function recompute(done) {
+    var entry = state.customerKnown ? bookEntry(state.customer) : entryByQ(state.lastQ);
+    var rows = entry ? rowsFrom(state.raw[text(entry.q)]) : [];
+    finish(compute(entry, rows), state.customerKnown ? state.customer : (entry ? 'x' : ''), done);
+  }
+  function listen() {
+    Object.keys(cfg.book).forEach(function (name) {
+      var q = text(cfg.book[name].q);
+      if (!q) return;
+      W.listenFromField('input_' + q, 'change', function (v) {
+        state.raw[q] = v;
+        state.lastQ = q;
+        recompute();
       });
+    });
+    W.listenFromField('input_' + cfg.customerField, 'change', function (v) {
+      state.customer = customerFrom(v);
+      state.customerKnown = true;
+      recompute();
     });
   }
   function finish(result, customer, done) {
@@ -290,9 +301,8 @@
       document.getElementById('wrap').innerHTML = '<div class="empty">Ticket totals (' + cfg.mode + ') are worked out here when the form is filled in.</div>';
       return;
     }
-    pass();
-    if (timer) clearInterval(timer);
-    timer = setInterval(function () { pass(); }, 1500);
+    listen();
+    recompute();
   });
 
   W.subscribe('submit', function () {
@@ -302,8 +312,7 @@
       sent = true;
       W.sendSubmit({ valid: true, value: value === undefined || value === null ? (lastValue || '') : value });
     }
-    try { pass(send); } catch (e) { send(lastValue || ''); }
-    setTimeout(function () { send(lastValue || ''); }, 1200);   // never hold the order up
+    try { recompute(send); } catch (e) { send(lastValue || ''); }
   });
 })();
 </script>
