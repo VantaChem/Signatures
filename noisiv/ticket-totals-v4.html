@@ -19,7 +19,7 @@
   itself (the "book" setting), which the nightly Customer Book sync keeps up to date.
 
   Settings (set on the form field, not here):
-    mode           lines | products
+    mode           lines | products   (the "lines" field is kept out of sight on the form; it feeds the review screen)
     customerField  id of the "Select Customer" field
     totalField     (products mode, optional) id of a text field to receive the ticket total
     book           JSON: { "Customer name": { "q": "<order-lines field id>", "p": { "Product": price, ... } }, ... }
@@ -171,6 +171,7 @@
         costCenter: clean(pick(row, ['cost center'])),
         product: product,
         date: clean(pick(row, ['delivery date', 'date'])),
+        comments: clean(pick(row, ['comments'])),
         gallons: gallons, price: hasPrice ? price : null, sales: sales
       });
       if (!byProduct[product]) { byProduct[product] = { product: product, gallons: 0, price: hasPrice ? price : null, sales: 0 }; order.push(product); }
@@ -193,11 +194,14 @@
     if (cfg.mode === 'lines') {
       out = r.lines.map(function (l) {
         return {
+          // Same columns as the order-lines block, plus Line Sales. The review screen shows
+          // this in place of the block, so each line carries its own sales figure.
           'Cost Center': l.costCenter,
           'Product': l.product,
-          'Qty': fmtQty(l.gallons),
-          'Price': l.price === null ? 'no price' : fmtPrice(l.price),
-          'Line Sales': l.price === null ? '' : fmtMoney(l.sales)
+          'QTY Delivered': fmtQty(l.gallons),
+          'Delivery Date': l.date,
+          'Line Sales': l.price === null ? '' : fmtMoney(l.sales),
+          'Comments': l.comments
         };
       });
     } else {
