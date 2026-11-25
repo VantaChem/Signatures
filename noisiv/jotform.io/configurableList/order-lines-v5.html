@@ -591,7 +591,11 @@
     // the form can say "ready" again when the block is shown after being hidden; only the first time may bring saved lines in
     if (first && data && data.value) { try { if (load(data.value)) lastSent = null; } catch (e) {} }
     draw();
-    if (!isBlank()) publish();
+    if (!isBlank()) {
+      publish();
+      // a ticket opened again: the totals box may not be listening yet, so say it again shortly after
+      if (first) [1200, 2500].forEach(function (ms) { setTimeout(function () { lastSent = null; publish(); }, ms); });
+    }
   }
   W.subscribe('ready', boot);
   W.subscribe('submit', function () {
