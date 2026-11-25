@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ticket Totals</title>
+<!--
+  VantaChem / NoisiV - Ticket Totals calculator for the Jotform "Sales Order Form".
+
+  What it does: reads the order lines the rep has entered, looks up each product's
+  price per gallon, and works out
+    - sales for every order line            (mode = lines)
+    - gallons and sales for every product,
+      plus the ticket total                 (mode = products)
+    - the order lines for the Field Ticket's Products Delivered table, with a
+      mark on every line that belongs to the same cost center as the line
+      above it                                (mode = grouped)
+  The result is handed back to the form, so it prints on the Field Ticket,
+  shows on the review screen and goes out in the order email.
+
+  This page holds NO prices and NO customer names. Prices arrive from the form
+  itself (the "book" setting), which the nightly Customer Book sync keeps up to date.
+
+  Settings (set on the form field, not here):
+    mode           lines | products | grouped
+                   (the "lines" and "grouped" fields are kept out of sight on the form; "lines" feeds the
+                   review screen, "grouped" is the Products Delivered table on the Field Ticket. The Field
+                   Ticket uses the mark in the last column to print a cost center's name once, with its
+                   products under it, and to repeat the name when its lines run on to the next page; the
+                   mark column itself does not print.)
+    customerField  id of the "Select Customer" field
+    totalField     (products mode, optional) id of a text field to receive the ticket total
+    resetField     (optional) element id of a form field to set back whenever the order changes,
+                   e.g. input_70 - the "Get a field signature now?" switch. Setting it back to
+                   resetValue hides the signature section, and the form then wipes the signature,
+                   so a signature can never ride along on an order that was changed after signing.
+    resetValue     the value to set it to (No)
+    signSwitch     (optional) element id of the "Get a field signature now?" switch, e.g. input_70
+    signDateField  (optional) id of the "Date Signed" text field. When the switch is set to Yes,
+                   today's date is written into it, so the signed date prints on the Field Ticket.
+    fileField      (optional) id of a text field to receive "<Customer>-<MM-DD-YY>" (the customer and the
+                   first order line's delivery date), which the Field Ticket uses in its file name.
+    book           JSON: { "Customer name": { "q": "<order-lines field id>", "p": { "Product": price, ... } }, ... }
+-->
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #222; }
+  #wrap { padding: 1px; }
+  .empty { color: #8b8f88; font-size: 13px; padding: 4px 0 6px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #4F5251; }
+  th { background: #D9D9D9; color: #222; font-size: 11px; font-weight: bold; text-transform: uppercase;
+       letter-spacing: .4px; text-align: left; padding: 7px 9px; white-space: nowrap; }
+  td { padding: 8px 9px; border-top: 1px solid #e6e8e2; font-size: 14px; vertical-align: top; }
+  tr:nth-child(even) td { background: #f6f7f4; }
+  th.n, td.n { text-align: right; white-space: nowrap; }
+  td.m { font-weight: bold; color: #5f7c1f; }
+  tr.total td { background: #eef3e1 !important; border-top: 2px solid #799B2C; font-weight: bold; font-size: 15px; }
+  tr.total td.m { color: #3f5512; }
+  .warn { color: #b42318; font-size: 12px; padding-top: 6px; }
+  @media (max-width: 480px) {
+    th, td { padding: 6px 6px; font-size: 12px; }
+    th { font-size: 10px; letter-spacing: 0; }
+    tr.total td { font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="empty">Totals appear here once order lines are entered.</div></div>
+<script>
+(function () {
+  'use strict';
+
+  var cfg = { mode: 'products', customerField: '17', totalField: '', resetField: '', resetValue: 'No', signSwitch: '', signDateField: '', fileField: '', book: {} };
+  var lastPrint = null;      // what the order looked like last time (customer + lines)
+  var armedAt = 0;           // changes before this moment are the form loading, not the rep editing
+  var lastValue = null;      // last value handed to the form
+  var lastTotal = null;      // last ticket total written to totalField
+  var lastFile = null;       // last file-name part written to fileField
+  var lastHeight = 0;
+  var W = window.JFCustomWidget;
+
+  /* ---------- small helpers ---------- */
+  function text(v) { return v === null || v === undefined ? '' : String(v); }
+  // Jotform sometimes hands names over with "&" written as "&amp;" - treat both the same.
+  function unesc(s) {
+    return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'");
+  }
+  function clean(v) { return unesc(text(v)).replace(/\s+/g, ' ').trim(); }
+  function num(v) {
+    var n = parseFloat(text(v).replace(/[^0-9.\-]/g, ''));
+    return isFinite(n) ? n : 0;
+  }
+  function round2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
+  function commas(s) { return s.replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function fmtQty(n) {
+    var s = (Math.round(n * 100) / 100).toFixed(2).replace(/\.?0+$/, '');
+    var parts = s.split('.');
+    return commas(parts[0]) + (parts[1] ? '.' + parts[1] : '');
+  }
+  function fmtMoney(n) {
+    var parts = round2(n).toFixed(2).split('.');
+    return '$' + commas(parts[0]) + '.' + parts[1];
+  }
+  function fmtPrice(n) {
+    // at least 2 decimals, up to 4 when the price needs them
+    var s = n.toFixed(4).replace(/0{1,2}$/, '');
+    var parts = s.split('.');
+    return '$' + commas(parts[0]) + '.' + parts[1];
+  }
+  function esc(s) {
+    return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function parseMaybeJson(v) {
+    if (typeof v !== 'string') return v;
+    var s = v.trim();
+    if (!s || (s.charAt(0) !== '[' && s.charAt(0) !== '{')) return v;
+    try { return JSON.parse(s); } catch (e) { return v; }
+  }
+
+  /* ---------- settings ---------- */
+  function readSettings() {
+    var s = {};
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    var mode = clean(s.mode).toLowerCase();
+    cfg.mode = mode === 'lines' || mode === 'grouped' ? mode : 'products';
+    cfg.customerField = clean(s.customerField) || '17';
+    cfg.totalField = clean(s.totalField);
+    cfg.resetField = clean(s.resetField);
+    cfg.resetValue = clean(s.resetValue) || 'No';
+    cfg.signSwitch = clean(s.signSwitch);
+    cfg.signDateField = clean(s.signDateField);
+    cfg.fileField = clean(s.fileField);
+    var book = parseMaybeJson(s.book);
+    cfg.book = book && typeof book === 'object' ? book : {};
+  }
+
+  function bookEntry(customer) {
+    var name = clean(customer);
+    if (!name) return null;
+    var low = name.toLowerCase(), found = null;
+    Object.keys(cfg.book).some(function (k) {
+      if (clean(k).toLowerCase() === low) { found = cfg.book[k]; return true; }
+      return false;
+    });
+    return found;
+  }
+  function priceOf(entry, product) {
+    var p = entry && entry.p ? entry.p : {};
+    var name = clean(product);
+    var low = name.toLowerCase(), found = null;
+    Object.keys(p).some(function (k) {
+      if (clean(k).toLowerCase() === low) { found = num(p[k]); return true; }
+      return false;
+    });
+    return found;
+  }
+
+  /* ---------- reading the form ---------- */
+  // "600-CO\nBayswater" -> "Bayswater"
+  function customerFrom(v) {
+    v = parseMaybeJson(v);
+    if (v && typeof v === 'object') {
+      var vals = Array.isArray(v) ? v : Object.keys(v).map(function (k) { return v[k]; });
+      v = vals.join('\n');
+    }
+    var parts = text(v).split(/\r?\n/).map(clean).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  }
+  // "Texian NM" -> "Texian-NM": only letters and numbers, so it is safe in a file name
+  function fileSafe(v) {
+    return clean(v).replace(/&/g, ' and ').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  }
+  // "11-05-2026" (or 11/5/2026, or 2026-11-05) -> "11-05-26"
+  function shortDate(v) {
+    var s = clean(v), m, two = function (n) { n = String(n); return n.length < 2 ? '0' + n : n; };
+    if ((m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2}|\d{4})$/.exec(s))) return two(m[1]) + '-' + two(m[2]) + '-' + m[3].slice(-2);
+    if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s))) return two(m[2]) + '-' + two(m[3]) + '-' + m[1].slice(-2);
+    return '';
+  }
+  // "<Customer>-<MM-DD-YY>" from the customer and the first order line that carries a delivery date
+  function filePart(customer, lines) {
+    var name = fileSafe(customer), date = '';
+    lines.some(function (l) { date = shortDate(l.date); return !!date; });
+    if (!name || !lines.length) return '';
+    return name + (date ? '-' + date : '');
+  }
+  function rowsFrom(v) {
+    v = parseMaybeJson(v);
+    if (v && typeof v === 'object' && !Array.isArray(v) && v.value !== undefined) v = parseMaybeJson(v.value);
+    return Array.isArray(v) ? v : [];
+  }
+  function pick(row, names) {
+    var keys = Object.keys(row || {});
+    for (var i = 0; i < names.length; i++) {
+      for (var j = 0; j < keys.length; j++) {
+        if (clean(keys[j]).toLowerCase() === names[i]) return row[keys[j]];
+      }
+    }
+    return '';
+  }
+
+  /* ---------- the math ---------- */
+  function compute(entry, rows) {
+    var lines = [], byProduct = {}, order = [], missing = [];
+    rows.forEach(function (row) {
+      var product = clean(pick(row, ['product']));
+      var qtyRaw = clean(pick(row, ['qty delivered', 'qty', 'quantity', 'gallons']));
+      if (!product || !qtyRaw) return;                      // line not filled in yet
+      var gallons = num(qtyRaw);
+      var price = priceOf(entry, product);
+      var hasPrice = price !== null && price !== undefined;
+      var sales = hasPrice ? round2(gallons * price) : 0;
+      if (!hasPrice && missing.indexOf(product) === -1) missing.push(product);
+      lines.push({
+        costCenter: clean(pick(row, ['cost center'])),
+        product: product,
+        date: clean(pick(row, ['delivery date', 'date'])),
+        comments: clean(pick(row, ['comments'])),
+        gallons: gallons, price: hasPrice ? price : null, sales: sales
+      });
+      if (!byProduct[product]) { byProduct[product] = { product: product, gallons: 0, price: hasPrice ? price : null, sales: 0 }; order.push(product); }
+      byProduct[product].gallons += gallons;
+      byProduct[product].sales = round2(byProduct[product].sales + sales);
+    });
+    var totalGallons = 0, totalSales = 0;
+    lines.forEach(function (l) { totalGallons += l.gallons; totalSales = round2(totalSales + l.sales); });
+    return {
+      lines: lines,
+      products: order.map(function (k) { return byProduct[k]; }),
+      totalGallons: totalGallons, totalSales: totalSales, missing: missing
+    };
+  }
+
+  /* ---------- what gets saved with the order ---------- */
+  function toValue(r) {
+    if (!r.lines.length) return '';
+    var out;
+    if (cfg.mode === 'lines') {
+      out = r.lines.map(function (l) {
+        return {
+          // Same columns as the order-lines block, plus Line Sales. The review screen shows
+          // this in place of the block, so each line carries its own sales figure.
+          'Cost Center': l.costCenter,
+          'Product': l.product,
+          'QTY Delivered': fmtQty(l.gallons),
+          'Delivery Date': l.date,
+          'Line Sales': l.price === null ? '' : fmtMoney(l.sales),
+          'Comments': l.comments
+        };
+      });
+    } else if (cfg.mode === 'grouped') {
+      // The Field Ticket's Products Delivered table: the same columns as the order-lines block, plus a
+      // last column that is "+" on every line that has the same cost center as the line above it.
+      // Every line still carries its cost center; the Field Ticket decides where the name shows.
+      var before = null;
+      out = r.lines.map(function (l) {
+        var key = l.costCenter.toLowerCase();
+        var first = before === null || key !== before;
+        before = key;
+        return {
+          'Cost Center': l.costCenter,
+          'Product': l.product,
+          'QTY Delivered': fmtQty(l.gallons),
+          'Delivery Date': l.date,
+          'Comments': l.comments,
+          '+': first ? '' : '+'
+        };
+      });
+    } else {
+      out = r.products.map(function (p) {
+        return {
+          'Product': p.product,
+          'Total Qty': fmtQty(p.gallons),
+          'Price': p.price === null ? 'no price' : fmtPrice(p.price),
+          'Total Sales': p.price === null ? '' : fmtMoney(p.sales)
+        };
+      });
+      out.push({ 'Product': 'TICKET TOTAL', 'Total Qty': '', 'Price': '', 'Total Sales': fmtMoney(r.totalSales) });
+    }
+    return JSON.stringify(out);
+  }
+
+  /* ---------- what the rep sees ---------- */
+  function render(r, customer) {
+    var wrap = document.getElementById('wrap');
+    var html;
+    if (cfg.mode === 'grouped') {
+      html = '';                                             // out of sight on the form; nothing to draw
+    } else if (!r.lines.length) {
+      html = '<div class="empty">' + (customer ? 'Totals appear here once order lines are entered.' : 'Pick a customer and enter order lines to see totals.') + '</div>';
+    } else if (cfg.mode === 'lines') {
+      html = '<table><tr><th>Cost Center</th><th>Product</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Line Sales</th></tr>' +
+        r.lines.map(function (l) {
+          return '<tr><td>' + esc(l.costCenter) + '</td><td>' + esc(l.product) + '</td><td class="n">' + fmtQty(l.gallons) +
+            '</td><td class="n">' + (l.price === null ? '&ndash;' : fmtPrice(l.price)) + '</td><td class="n m">' + (l.price === null ? '&ndash;' : fmtMoney(l.sales)) + '</td></tr>';
+        }).join('') + '</table>';
+    } else {
+      html = '<table><tr><th>Product</th><th class="n">Total Qty</th><th class="n">Price</th><th class="n">Total Sales</th></tr>' +
+        r.products.map(function (p) {
+          return '<tr><td>' + esc(p.product) + '</td><td class="n">' + fmtQty(p.gallons) + '</td><td class="n">' +
+            (p.price === null ? '&ndash;' : fmtPrice(p.price)) + '</td><td class="n m">' + (p.price === null ? '&ndash;' : fmtMoney(p.sales)) + '</td></tr>';
+        }).join('') +
+        '<tr class="total"><td>Ticket Total</td><td class="n"></td><td class="n"></td><td class="n m">' + fmtMoney(r.totalSales) + '</td></tr></table>';
+    }
+    if (r.missing.length && cfg.mode !== 'grouped') {
+      html += '<div class="warn">No price on file for: ' + esc(r.missing.join(', ')) + '. Those lines are not in the totals.</div>';
+    }
+    if (wrap.innerHTML !== html) wrap.innerHTML = html;
+    var h = Math.ceil(wrap.getBoundingClientRect().height) + 4;
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+
+  /* ---------- keeping up with the form ----------
+     The form tells this page every time the customer or an order-lines block changes.
+     (Order-lines blocks report changes because the form's hidden "Total Qty" calculation uses them.) */
+  var state = { customer: '', customerKnown: false, lastQ: '', raw: {} };
+
+  function entryByQ(q) {
+    var found = null;
+    Object.keys(cfg.book).some(function (k) {
+      if (text(cfg.book[k].q) === text(q)) { found = cfg.book[k]; return true; }
+      return false;
+    });
+    return found;
+  }
+  function nameByQ(q) {
+    var found = '';
+    Object.keys(cfg.book).some(function (k) {
+      if (text(cfg.book[k].q) === text(q)) { found = k; return true; }
+      return false;
+    });
+    return found;
+  }
+  function recompute(done) {
+    var entry = state.customerKnown ? bookEntry(state.customer) : entryByQ(state.lastQ);
+    var rows = entry ? rowsFrom(state.raw[text(entry.q)]) : [];
+    // Any real change to the customer or the lines switches the signature section back off.
+    var print = clean(state.customer) + '|' + JSON.stringify(rows.map(function (r) {
+      return [clean(pick(r, ['cost center'])), clean(pick(r, ['product'])), clean(pick(r, ['qty delivered', 'qty'])),
+              clean(pick(r, ['delivery date', 'date'])), clean(pick(r, ['comments']))];
+    }));
+    if (lastPrint !== null && print !== lastPrint && cfg.resetField && Date.now() > armedAt) {
+      try { W.storeToField(cfg.resetField, cfg.resetValue); } catch (e) {}
+    }
+    lastPrint = print;
+    var name = state.customerKnown ? state.customer : nameByQ(state.lastQ);
+    finish(compute(entry, rows), state.customerKnown ? state.customer : (entry ? 'x' : ''), done, name);
+  }
+  function listen() {
+    Object.keys(cfg.book).forEach(function (name) {
+      var q = text(cfg.book[name].q);
+      if (!q) return;
+      W.listenFromField('input_' + q, 'change', function (v) {
+        state.raw[q] = v;
+        state.lastQ = q;
+        recompute();
+      });
+    });
+    if (cfg.signSwitch && cfg.signDateField) {
+      // the signature section was just opened: stamp today's date (MM-DD-YYYY, like the delivery dates)
+      W.listenFromField(cfg.signSwitch, 'change', function (v) {
+        if (clean(v).toLowerCase() !== 'yes') return;
+        var d = new Date(), two = function (n) { return (n < 10 ? '0' : '') + n; };
+        var today = two(d.getMonth() + 1) + '-' + two(d.getDate()) + '-' + d.getFullYear();
+        setTimeout(function () {
+          try { W.setFieldsValueById([{ id: cfg.signDateField, value: today }]); } catch (e) {}
+        }, 250);
+      });
+    }
+    W.listenFromField('input_' + cfg.customerField, 'change', function (v) {
+      state.customer = customerFrom(v);
+      state.customerKnown = true;
+      recompute();
+    });
+  }
+  function finish(result, customer, done, name) {
+    render(result, customer);
+    var value = toValue(result);
+    if (value !== lastValue) {
+      lastValue = value;
+      try { W.sendData({ value: value }); } catch (e) {}
+    }
+    if (cfg.mode === 'products' && cfg.totalField) {
+      var total = result.lines.length ? fmtMoney(result.totalSales) : '';
+      if (total !== lastTotal) {
+        lastTotal = total;
+        try { W.setFieldsValueById([{ id: cfg.totalField, value: total }]); } catch (e) {}
+      }
+    }
+    if (cfg.fileField) {
+      var part = filePart(name, result.lines);
+      if (part !== lastFile) {
+        lastFile = part;
+        try { W.setFieldsValueById([{ id: cfg.fileField, value: part }]); } catch (e) {}
+      }
+    }
+    if (done) done(value);
+  }
+
+  /* ---------- wiring ---------- */
+  W.subscribe('ready', function () {
+    readSettings();
+    var onBuilder = false;
+    try { onBuilder = !!W.isWidgetOnBuilder(); } catch (e) {}
+    if (onBuilder) {
+      document.getElementById('wrap').innerHTML = '<div class="empty">Ticket totals (' + cfg.mode + ') are worked out here when the form is filled in.</div>';
+      return;
+    }
+    armedAt = Date.now() + 3000;
+    listen();
+    recompute();
+  });
+
+  W.subscribe('submit', function () {
+    var sent = false;
+    function send(value) {
+      if (sent) return;
+      sent = true;
+      W.sendSubmit({ valid: true, value: value === undefined || value === null ? (lastValue || '') : value });
+    }
+    try { recompute(send); } catch (e) { send(lastValue || ''); }
+  });
+})();
+</script>
+</body>
+</html>
