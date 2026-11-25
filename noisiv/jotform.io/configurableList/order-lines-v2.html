@@ -223,14 +223,28 @@
     return y >= now - 1 && y <= now + 1;
   }
 
-  /* ---------- telling the form ---------- */
+  /* ---------- telling the form ----------
+     The form keeps two things for this block: the lines, and whether they are complete.
+       - complete:    one message, "valid" - the form refreshes the totals and lets the rep go on.
+       - incomplete:  the lines first (so the totals stay current), then "not valid" with what is missing.
+                      The form shows that sentence under the block when the rep presses Review.
+       - empty:       an empty answer; the form's own "required" check covers it. */
   var lastSent = null, pubTimer = null;
   function currentValue() { return isBlank() ? '' : JSON.stringify(rows()); }
+  function whatIsMissing() {
+    var p = problems();
+    if (!p.length) return '';
+    return p[0].msg + (p.length > 1 ? ' (and ' + (p.length - 1) + ' more to finish)' : '');
+  }
   function publish() {
-    var v = currentValue();
-    if (v !== lastSent) {
-      lastSent = v;
-      try { W.sendData({ value: v }); } catch (e) {}
+    var v = currentValue(), miss = v ? whatIsMissing() : '', key = v + '\n' + miss;
+    if (key !== lastSent) {
+      lastSent = key;
+      try {
+        if (!v) W.sendData({ value: '' });
+        else if (!miss) W.sendData({ valid: true, value: v });
+        else { W.sendData({ value: v }); W.sendData({ valid: false, value: v, error: { msg: miss } }); }
+      } catch (e) {}
     }
     return v;
   }
@@ -248,9 +262,14 @@
     if (clean(value) && !seen) h += '<option value="' + esc(value) + '" selected>' + esc(value) + '</option>';
     return h;
   }
+  // Boxes are marked red once the rep has tried to go on, or has left a product (or location) they had started.
   function badSet() {
     var set = {};
-    if (state.tried) problems().forEach(function (p) { set[p.l + '|' + p.j + '|' + p.f] = true; });
+    problems().forEach(function (p) {
+      var loc = state.locs[p.l], ln = p.j >= 0 ? loc.lines[p.j] : null;
+      var show = state.tried || (ln ? !!ln.t : !!loc.t);
+      if (show) set[p.l + '|' + p.j + '|' + p.f] = true;
+    });
     return set;
   }
   function lineHtml(loc, l, ln, j, bad) {
@@ -304,15 +323,13 @@
     var box = document.getElementById('statusBox');
     if (!box) return;
     box.innerHTML = statusHtml();
-    if (state.tried) {
-      var bad = badSet();
-      [].forEach.call(el.querySelectorAll('[data-f],[data-cc]'), function (n) {
-        var line = n.closest('.line'), loc = n.closest('.loc');
-        var key = n.hasAttribute('data-cc') ? loc.getAttribute('data-l') + '|-1|cc' : line.getAttribute('data-l') + '|' + line.getAttribute('data-j') + '|' + n.getAttribute('data-f');
-        if (n.getAttribute('data-f') === 'comments') return;
-        n.classList.toggle('bad', !!bad[key]);
-      });
-    }
+    var bad = badSet();
+    [].forEach.call(el.querySelectorAll('[data-f],[data-cc]'), function (n) {
+      var line = n.closest('.line'), loc = n.closest('.loc');
+      var key = n.hasAttribute('data-cc') ? loc.getAttribute('data-l') + '|-1|cc' : line.getAttribute('data-l') + '|' + line.getAttribute('data-j') + '|' + n.getAttribute('data-f');
+      if (n.getAttribute('data-f') === 'comments') return;
+      n.classList.toggle('bad', !!bad[key]);
+    });
     fit();
   }
 
@@ -458,10 +475,19 @@
   });
   el.addEventListener('focusout', function (ev) {
     var t = ev.target;
-    if (t.hasAttribute && t.hasAttribute('data-cc')) {
+    if (!t.hasAttribute) return;
+    if (t.hasAttribute('data-cc')) {
       var l = +t.getAttribute('data-cc');
       setTimeout(function () { if (state.open === l && document.activeElement !== t) closeList(l, true); }, 180);
+      return;
     }
+    // leaving a product: from now on its unfinished boxes show red (and so does the location's cost center box)
+    var line = t.closest ? t.closest('.line') : null, to = ev.relatedTarget;
+    if (!line || (to && to.closest && to.closest('.line') === line)) return;
+    var loc = state.locs[+line.getAttribute('data-l')], ln = loc && loc.lines[+line.getAttribute('data-j')];
+    if (!ln || lineBlank(ln)) return;
+    ln.t = true; loc.t = true;
+    setTimeout(refreshStatus, 0);
   });
   el.addEventListener('keydown', function (ev) {
     var t = ev.target;
@@ -552,16 +578,16 @@
   W.subscribe('submit', function () {
     clearTimeout(pubTimer);
     if (state.open !== -1) closeList(state.open, true);
-    var v = currentValue(), bad = !cfg.ok || isBlank() || problems().length > 0;
-    lastSent = v;
-    if (bad) {
+    var v = currentValue(), miss = !cfg.ok ? 'The order lines could not be loaded.' : (v ? whatIsMissing() : '');
+    if (!v || miss) {
       state.tried = true;
       draw();
-      try { W.sendSubmit({ valid: false, value: v }); } catch (e) {}
+      try { W.sendSubmit(miss ? { valid: false, value: v, error: { msg: miss } } : { valid: false, value: '' }); } catch (e) {}
       // the form empties this field when it is told "not ready"; hand the lines back so the totals stay on screen
       if (v) setTimeout(function () { lastSent = null; publish(); }, 600);
       return;
     }
+    lastSent = v + '\n';
     try { W.sendSubmit({ valid: true, value: v }); } catch (e) {}
   });
 
