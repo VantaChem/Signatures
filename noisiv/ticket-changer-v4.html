@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VantaChem - Change a Ticket</title>
+<!--
+  VantaChem "Change a Ticket" picker for the NoisiV app (a Jotform custom widget).
+
+  Shows the signed-in rep's tickets from the Sales Tracker's Orders tab and lets them start a
+  change, a cancel or a credit back:
+    - Active tickets:    change lines, cancel, (credit back - office only)
+    - Completed tickets: credit back only
+  The ticket list is not fetched from anywhere: the Sales Tracker writes it into this field's
+  settings every few minutes (t0, t1, ... = one long base64 text, cut in pieces; tn = how many).
+
+  What the rep chooses is written into the form's own fields (action, ticket, customer, district, reason and the
+  full request as JSON), and this field's own value is the table that prints on the email and the PDF. The form's
+  Submit button sends it; the Sales Tracker picks it up and applies it within a few minutes.
+
+  Settings (set on the field in Jotform):
+    repEmailField  id of the "Sales Rep Email" field (filled in by single sign-on)
+    repNameField   id of the "Sales Rep Name" field
+    tn, t0 ... t11 the ticket list, written by the Sales Tracker
+    actionField, ticketField, customerField, districtField, reasonField, dataField
+                   ids of the form fields this picker fills in
+-->
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 15px; color: #222; -webkit-text-size-adjust: 100%; }
+  * { box-sizing: border-box; }
+  #wrap { padding: 1px; }
+  .card { background: #fff; border: 1px solid #4F5251; border-radius: 6px; overflow: hidden; margin-bottom: 12px; }
+  .bar { background: #4F5251; color: #fff; font-size: 12px; font-weight: bold; letter-spacing: .6px; text-transform: uppercase; padding: 9px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .bar small { font-weight: normal; letter-spacing: 0; text-transform: none; opacity: .85; }
+  .pad { padding: 12px; }
+  .muted { color: #6b6f68; font-size: 13px; }
+  .note { background: #fff8e1; border: 1px solid #e0a526; color: #5c4400; border-radius: 6px; padding: 9px 11px; font-size: 13px; margin-bottom: 12px; }
+  input[type=text], input[type=number], input[type=date], textarea, select {
+    width: 100%; font: inherit; font-size: 16px; padding: 9px 10px; border: 1px solid #9aa097; border-radius: 5px; background: #fff; color: #222; }
+  textarea { min-height: 74px; resize: vertical; }
+  select { -webkit-appearance: menulist; appearance: menulist; height: 42px; }
+  input:focus, textarea:focus, select:focus { outline: 2px solid #799B2C; outline-offset: 0; border-color: #799B2C; }
+  .search { margin-bottom: 12px; }
+  .row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: #fff; border: 0; border-top: 1px solid #e6e8e2;
+         padding: 12px; font: inherit; color: #222; cursor: pointer; }
+  .row:first-child { border-top: 0; }
+  .row:hover, .row:focus { background: #f3f6ea; outline: none; }
+  .row .main { flex: 1; min-width: 0; }
+  .row .tk { font-weight: bold; font-size: 15px; }
+  .row .sub { color: #555; font-size: 13px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .amt { text-align: right; white-space: nowrap; font-size: 13px; color: #333; }
+  .row .amt b { display: block; font-size: 15px; color: #3f5512; }
+  .row .go { color: #799B2C; font-size: 20px; line-height: 1; }
+  .pill { display: inline-block; font-size: 11px; font-weight: bold; letter-spacing: .4px; text-transform: uppercase; border-radius: 999px; padding: 3px 9px; vertical-align: middle; }
+  .pill.active { background: #e6f1d0; color: #3f5512; }
+  .pill.done { background: #e3e6e1; color: #3d403c; }
+  .pill.credit { background: #ffe9cc; color: #7a4300; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .facts div span { display: block; font-size: 11px; font-weight: bold; letter-spacing: .5px; text-transform: uppercase; color: #6b6f68; }
+  .facts div b { font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #D9D9D9; color: #222; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: .4px; text-align: left; padding: 7px 9px; white-space: nowrap; }
+  td { padding: 8px 9px; border-top: 1px solid #e6e8e2; font-size: 14px; vertical-align: top; }
+  th.n, td.n { text-align: right; white-space: nowrap; }
+  tr.total td { background: #eef3e1; border-top: 2px solid #799B2C; font-weight: bold; }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; }
+  .btn { flex: 1 1 150px; font: inherit; font-weight: bold; font-size: 15px; padding: 13px 14px; border-radius: 6px; border: 1px solid #4F5251; background: #fff; color: #222; cursor: pointer; text-align: center; }
+  .btn.primary { background: #799B2C; border-color: #799B2C; color: #fff; }
+  .btn.danger { background: #fff; border-color: #b42318; color: #b42318; }
+  .btn.amber { background: #fff; border-color: #b96a00; color: #8a4f00; }
+  .btn.quiet { flex: 0 0 auto; border-color: #9aa097; font-weight: normal; padding: 9px 14px; }
+  .btn:focus { outline: 2px solid #799B2C; outline-offset: 2px; }
+  .line { border-top: 1px solid #e6e8e2; padding: 12px; }
+  .line:first-child { border-top: 0; }
+  .line.off { background: #f5f5f3; }
+  .line.off .fields { opacity: .45; }
+  .line h4 { margin: 0 0 8px; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .line h4 small { font-weight: normal; color: #555; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .fields label { display: block; font-size: 11px; font-weight: bold; letter-spacing: .4px; text-transform: uppercase; color: #6b6f68; margin-bottom: 3px; }
+  .fields .wide { grid-column: 1 / -1; }
+  .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: normal; color: #b42318; cursor: pointer; }
+  .check input { width: 18px; height: 18px; }
+  .lbl { display: block; font-size: 11px; font-weight: bold; letter-spacing: .4px; text-transform: uppercase; color: #6b6f68; margin: 0 0 4px; }
+  .err { color: #b42318; font-size: 13px; margin-top: 6px; }
+  .status { border-radius: 6px; padding: 11px 12px; font-size: 14px; margin-bottom: 4px; }
+  .status.ok { background: #e6f1d0; border: 1px solid #799B2C; color: #2f4010; }
+  .status.todo { background: #fff; border: 1px solid #9aa097; color: #333; }
+  .status.bad { background: #fdecea; border: 1px solid #b42318; color: #7a1a12; }
+  .status ul { margin: 6px 0 0 18px; padding: 0; }
+  .tagnew { display: inline-block; background: #e6f1d0; color: #3f5512; font-size: 10px; font-weight: bold; letter-spacing: .4px; text-transform: uppercase; border-radius: 999px; padding: 2px 7px; margin-left: 6px; }
+  @media (max-width: 480px) {
+    th, td { padding: 6px 6px; font-size: 12px; }
+    th { font-size: 10px; letter-spacing: 0; }
+    .hide-s { display: none; }
+    .fields { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="card"><div class="pad muted">Loading your tickets…</div></div></div>
+<script>
+(function () {
+  'use strict';
+  var W = window.JFCustomWidget;
+  var el = document.getElementById('wrap');
+  var cfg = { repEmailField: '15', repNameField: '62', fields: { action: '', ticket: '', customer: '', district: '', reason: '', data: '' } };
+  var state = { data: null, dataError: '', email: '', name: '', view: 'list', ticket: null, action: '', search: '', edit: null, tried: false };
+
+  /* ---------- helpers ---------- */
+  function text(v) { return v === null || v === undefined ? '' : String(v); }
+  function unesc(s) { return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&amp;/g, '&'); }
+  function clean(v) { return unesc(text(v)).replace(/\s+/g, ' ').trim(); }
+  function low(v) { return clean(v).toLowerCase(); }
+  function esc(s) { return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function num(v) { var n = parseFloat(text(v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : 0; }
+  function round2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
+  function commas(s) { return s.replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function qty(n) { var s = round2(n).toFixed(2).replace(/\.?0+$/, ''), p = s.split('.'); return commas(p[0]) + (p[1] ? '.' + p[1] : ''); }
+  function money(n) { var neg = n < 0, p = round2(Math.abs(n)).toFixed(2).split('.'); return (neg ? '-' : '') + '$' + commas(p[0]) + '.' + p[1]; }
+  function price(n) { var s = n.toFixed(4).replace(/0{1,2}$/, ''), p = s.split('.'); return '$' + commas(p[0]) + '.' + p[1]; }
+  function usDate(iso) { var m = text(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? m[2] + '/' + m[3] + '/' + m[1] : text(iso); }
+  function formDate(iso) { var m = text(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? m[2] + '-' + m[3] + '-' + m[1] : text(iso); }
+  function isIso(s) { return /^\d{4}-\d{2}-\d{2}$/.test(text(s)); }
+  function parseMaybeJson(v) { if (typeof v !== 'string') return v; try { return JSON.parse(v); } catch (e) { return v; } }
+
+  /* ---------- the ticket list (written into this field's settings by the Sales Tracker) ---------- */
+  function decodeList(s) {
+    var count = parseInt(text(s.tn), 10), parts = [];
+    for (var i = 0; i < 12 && (!(count >= 0) || i < count); i++) { var p = text(s['t' + i]).replace(/\s+/g, ''); if (!p) break; parts.push(p); }
+    var b64 = parts.join('');
+    if (!b64) return null;
+    b64 = b64.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    var bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (var j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+    var json = window.TextDecoder ? new TextDecoder('utf-8').decode(bytes) : decodeURIComponent(escape(bin));
+    return JSON.parse(json);
+  }
+  function readSettings() {
+    var s;
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    cfg.repEmailField = clean(s.repEmailField) || '15';
+    cfg.repNameField = clean(s.repNameField) || '62';
+    ['action', 'ticket', 'customer', 'district', 'reason', 'data'].forEach(function (k) { cfg.fields[k] = clean(s[k + 'Field']).replace(/\D/g, ''); });
+    try { state.data = decodeList(s); state.dataError = state.data ? '' : 'empty'; }
+    catch (e) { state.data = null; state.dataError = 'unreadable'; }
+  }
+
+  /* ---------- who is signed in (the two fields single sign-on fills in) ---------- */
+  function nameFrom(v) {
+    v = parseMaybeJson(v);
+    if (v && typeof v === 'object') return clean([v.first, v.middle, v.last].filter(Boolean).join(' '));
+    return clean(v);
+  }
+  function readWho(done) {
+    try {
+      W.getFieldsValueById([cfg.repEmailField, cfg.repNameField], function (res) {
+        var list = (res && res.data) || [];
+        list.forEach(function (f) {
+          var id = text(f.selector || f.id).replace(/\D/g, '');
+          if (id === cfg.repEmailField && clean(f.value)) state.email = low(f.value);
+          if (id === cfg.repNameField && nameFrom(f.value)) state.name = nameFrom(f.value);
+        });
+        if (done) done();
+      });
+    } catch (e) { if (done) done(); }
+  }
+  function isAdmin() { return !!state.data && (state.data.admins || []).map(low).indexOf(low(state.name)) !== -1; }
+  function myTickets() {
+    if (!state.data) return [];
+    // the tracker lists them oldest delivery first - show the newest first
+    var all = (state.data.tickets || []).slice().reverse(), admin = isAdmin(), me = low(state.name), mail = state.email;
+    return all.filter(function (t) { return admin || (mail && low(t.e) === mail) || (me && low(t.by) === me); });
+  }
+  function can(t) {
+    var done = t.s === 'Completed', credit = !!t.cr;
+    return { change: !done && !credit, cancel: !done, credit: !credit && (done || isAdmin()) };
+  }
+  function listsFor(t) {
+    var all = (state.data && state.data.lists) || {}, l = all[low(t.c)];
+    return l && l.cc && l.p ? l : null;
+  }
+  function weekOf(t) {
+    var w = t.w || {}, v = w[t.c];
+    if (v === undefined) { var k = Object.keys(w); v = k.length ? w[k[0]] : ''; }
+    v = clean(v);
+    return v === 'Yes' || v === 'No' ? v : '';
+  }
+
+  /* ---------- what gets sent ---------- */
+  var ACTION_LABEL = { change: 'Change', cancel: 'Cancel', credit: 'Credit' };
+  function build() {
+    var t = state.ticket, e = state.edit, a = state.action, errs = [], rows = [], req = null;
+    if (!t || !a || !e || state.view !== 'action') return { ok: false, none: true, errs: ['Pick a ticket, then what you want to do with it.'], rows: [], req: null };
+    var reason = clean(e.reason);
+    if (a === 'change') {
+      var kept = e.lines.filter(function (l) { return !l.remove; });
+      if (!kept.length) errs.push('Every line is removed. To take the whole ticket off, go back and use Cancel ticket.');
+      kept.forEach(function (l) {
+        var name = 'Line ' + (e.lines.indexOf(l) + 1) + ': ';
+        if (!clean(l.cc)) errs.push(name + 'pick a cost center.');
+        if (!clean(l.product)) errs.push(name + 'pick a product.');
+        if (!(num(l.qty) > 0)) errs.push(name + 'enter the quantity delivered.');
+        if (!isIso(l.date)) errs.push(name + 'pick the delivery date.');
+      });
+      var changed = e.week !== e.week0 || kept.length !== e.lines.length || e.lines.some(function (l) {
+        return l.isNew || clean(l.cc) !== clean(l.o.cc) || clean(l.product) !== clean(l.o.product) || num(l.qty) !== l.o.qty || l.date !== l.o.date || clean(l.comments) !== clean(l.o.comments);
+      });
+      if (!changed && !errs.length) errs.push('Nothing has been changed yet.');
+      req = { v: 1, action: 'change', ticket: t.t, base: text(t.sg), reason: reason, week: e.week,
+              lines: kept.map(function (l) { return { i: l.isNew ? -1 : l.i, cc: clean(l.cc), p: clean(l.product), q: String(num(l.qty)), d: l.date, c: clean(l.comments) }; }) };
+      rows = kept.map(function (l) { return { 'Cost Center': clean(l.cc), 'Product': clean(l.product), 'QTY Delivered': qty(num(l.qty)), 'Delivery Date': formDate(l.date), 'Comments': clean(l.comments) }; });
+    } else if (a === 'cancel') {
+      req = { v: 1, action: 'cancel', ticket: t.t, reason: reason };
+      rows = (t.L || []).map(function (l) { return { 'Cost Center': text(l[0]), 'Product': text(l[1]), 'QTY Delivered': qty(num(l[2])), 'Delivery Date': formDate(l[3]), 'Comments': text(l[4]) }; });
+    } else if (a === 'credit') {
+      var picked = e.lines.filter(function (l) { return num(l.credit) > 0; }), total = 0, totalQty = 0;
+      if (!picked.length) errs.push('Enter how much to credit back on at least one line.');
+      picked.forEach(function (l) {
+        var name = 'Line ' + (l.i + 1) + ': ';
+        if (num(l.credit) > l.left + 0.005) errs.push(name + 'only ' + qty(l.left) + ' is left to credit.');
+        if (l.price === null) errs.push(name + 'this line has no price on the tracker, so it can’t be credited from here. Call the office.');
+        total += l.price === null ? 0 : round2(l.price * num(l.credit));
+        totalQty += num(l.credit);
+      });
+      req = { v: 1, action: 'credit', ticket: t.t, reason: reason, credit: picked.map(function (l) { return { i: l.i, q: String(num(l.credit)) }; }) };
+      rows = picked.map(function (l) {
+        return { 'Cost Center': clean(l.cc), 'Product': clean(l.product), 'Credit QTY': qty(num(l.credit)), 'Price': l.price === null ? '' : price(l.price),
+                 'Credit': l.price === null ? '' : money(-round2(l.price * num(l.credit))) };
+      });
+      if (rows.length) rows.push({ 'Cost Center': 'CREDIT TOTAL', 'Product': '', 'Credit QTY': qty(totalQty), 'Price': '', 'Credit': money(-total) });
+    }
+    if (!reason) errs.push('Say why, in the reason box.');
+    return { ok: !errs.length, none: false, errs: errs, rows: rows, req: req };
+  }
+  var lastSent = '';
+  function publish() {
+    var b = build(), t = state.ticket, on = !b.none;
+    var vals = { action: on ? ACTION_LABEL[state.action] : '', ticket: on ? t.t : '', customer: on ? t.c : '', district: on ? t.d : '',
+                 reason: on && state.edit ? clean(state.edit.reason) : '', data: b.ok ? JSON.stringify(b.req) : '' };
+    var value = b.ok ? JSON.stringify(b.rows) : '';
+    var key = JSON.stringify(vals) + value;
+    if (key === lastSent) return b;
+    lastSent = key;
+    var list = [];
+    Object.keys(vals).forEach(function (k) { if (cfg.fields[k]) list.push({ id: cfg.fields[k], value: vals[k] }); });
+    try { if (list.length) W.setFieldsValueById(list); } catch (e) {}
+    try { W.sendData({ value: value }); } catch (e) {}
+    return b;
+  }
+  var pubTimer = null;
+  function publishSoon() { clearTimeout(pubTimer); pubTimer = setTimeout(function () { publish(); refreshStatus(); }, 250); }
+
+  /* ---------- screens ---------- */
+  function pill(t) {
+    if (t.cr) return '<span class="pill credit">Credit</span>';
+    return t.s === 'Completed' ? '<span class="pill done">Completed</span>' : '<span class="pill active">' + esc(t.s || 'Active') + '</span>';
+  }
+  function listScreen() {
+    if (!state.email && !state.name) {
+      return '<div class="card"><div class="pad muted">Waiting for your sign-in… If this stays here, close the form and open it again from the NoisiV app.</div></div>';
+    }
+    if (!state.data) {
+      return '<div class="card"><div class="pad muted">' + (state.dataError === 'unreadable'
+        ? 'The ticket list could not be read. Tell Mark.' : 'The ticket list has not been loaded yet. Try again in a few minutes.') + '</div></div>';
+    }
+    var mine = myTickets(), q = low(state.search);
+    var shown = mine.filter(function (t) { return !q || low(t.t + ' ' + t.c + ' ' + t.by).indexOf(q) !== -1; });
+    var open = shown.filter(function (t) { return t.s !== 'Completed'; });
+    var done = shown.filter(function (t) { return t.s === 'Completed'; });
+    var admin = isAdmin(), days = (state.data && state.data.days) || 60;
+    function rows(list) {
+      return list.map(function (t) {
+        return '<button type="button" class="row" data-open="' + esc(t.t) + '"><span class="main"><span class="tk">' + esc(t.t) + ' ' + pill(t) + '</span>' +
+          '<span class="sub">' + esc(t.c) + ' · ' + esc(t.dt) + (admin ? ' · ' + esc(t.by) : '') + '</span></span>' +
+          '<span class="amt"><b>' + money(num(t.a)) + '</b>' + qty(num(t.g)) + ' qty</span><span class="go">›</span></button>';
+      }).join('');
+    }
+    var h = (state.tried ? '<div class="status bad" style="margin-bottom:12px">Pick a ticket first, then choose what to do with it.</div>' : '') +
+      '<input class="search" type="text" id="search" placeholder="Search ticket # or customer" value="' + esc(state.search) + '">';
+    h += '<div class="card"><div class="bar">Active tickets <small>change, cancel' + (admin ? ' or credit' : '') + '</small></div>' +
+      (open.length ? rows(open) : '<div class="pad muted">' + (q ? 'No active ticket matches.' : 'You have no active tickets.') + '</div>') + '</div>';
+    h += '<div class="card"><div class="bar">Completed tickets <small>credit back only</small></div>' +
+      (done.length ? rows(done) : '<div class="pad muted">' + (q ? 'No completed ticket matches.' : 'No completed tickets in the last ' + days + ' days.') + '</div>') + '</div>';
+    h += '<div class="muted">Signed in as ' + esc(state.name || state.email) + (admin ? ' (you see every rep’s tickets)' : '') + '.</div>';
+    return h;
+  }
+  function linesTable(t) {
+    var done = t.s === 'Completed', total = 0, any = false;
+    var body = (t.L || []).map(function (l) {
+      var p = typeof l[5] === 'number' ? l[5] : null, sales = p === null ? null : round2(p * num(l[2]));
+      if (sales !== null) { total += sales; any = true; }
+      return '<tr><td>' + esc(l[0]) + '</td><td>' + esc(l[1]) + '</td><td class="n">' + qty(num(l[2])) + '</td><td class="hide-s">' + esc(usDate(l[3])) + '</td>' +
+        (done ? '<td class="n">' + (num(l[6]) ? qty(num(l[6])) : '–') + '</td>' : '') +
+        '<td class="n">' + (sales === null ? '–' : money(sales)) + '</td></tr>';
+    }).join('');
+    return '<table><thead><tr><th>Cost center</th><th>Product</th><th class="n">Qty</th><th class="hide-s">Delivered</th>' + (done ? '<th class="n">Credited</th>' : '') +
+      '<th class="n">Sales</th></tr></thead><tbody>' + body +
+      (any ? '<tr class="total"><td colspan="2">Ticket total</td><td class="n">' + qty(num(t.g)) + '</td><td class="hide-s"></td>' + (done ? '<td></td>' : '') + '<td class="n">' + money(num(t.a)) + '</td></tr>' : '') +
+      '</tbody></table>';
+  }
+  function head(t) {
+    return '<div class="card"><div class="bar">Ticket ' + esc(t.t) + ' ' + pill(t) + '</div><div class="pad"><div class="facts">' +
+      '<div><span>Customer</span><b>' + esc(t.c) + '</b></div><div><span>District</span><b>' + esc(t.d) + '</b></div>' +
+      '<div><span>Delivered</span><b>' + esc(t.dt) + '</b></div><div><span>Sales rep</span><b>' + esc(t.by) + '</b></div></div>' +
+      (t.cr ? '<div class="muted" style="margin-top:10px">This is a credit for ticket ' + esc(t.cr) + '.</div>' : '') + '</div></div>';
+  }
+  function ticketScreen() {
+    var t = state.ticket, c = can(t), b = '';
+    if (c.change) b += '<button type="button" class="btn primary" data-act="change">Change lines</button>';
+    if (c.cancel) b += '<button type="button" class="btn danger" data-act="cancel">Cancel ticket</button>';
+    if (c.credit) b += '<button type="button" class="btn amber" data-act="credit">Credit back</button>';
+    return (state.tried ? '<div class="status bad" style="margin-bottom:12px">Choose what to do with this ticket first.</div>' : '') +
+      '<div class="btns" style="margin-bottom:12px"><button type="button" class="btn quiet" data-back="list">‹ All tickets</button></div>' + head(t) +
+      '<div class="card"><div class="bar">Lines on this ticket</div>' + linesTable(t) + '</div>' +
+      '<div class="card"><div class="bar">What do you want to do?</div><div class="pad"><div class="btns">' + b + '</div>' +
+      (t.s === 'Completed' ? '<div class="muted" style="margin-top:10px">The office has invoiced this ticket, so it can only be credited back.</div>' : '') +
+      (t.cr ? '<div class="muted" style="margin-top:10px">A credit can be cancelled here. To change it, cancel it and enter the credit again.</div>' : '') + '</div></div>';
+  }
+  function backBar(t) { return '<div class="btns" style="margin-bottom:12px"><button type="button" class="btn quiet" data-back="ticket">‹ Ticket ' + esc(t.t) + '</button></div>'; }
+  function statusBox(b) {
+    var what = { change: 'change', cancel: 'cancel', credit: 'credit' }[state.action];
+    if (b.ok) return '<div class="status ok" id="status"><b>Ready.</b> Press <b>Submit</b> below to send this ' + what + '.</div>';
+    return '<div class="status ' + (state.tried ? 'bad' : 'todo') + '" id="status"><b>' + (state.tried ? 'Not sent yet.' : 'Before you can submit:') + '</b><ul>' +
+      b.errs.slice(0, 8).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>';
+  }
+  function refreshStatus() {
+    var box = document.getElementById('status');
+    if (!box || state.view !== 'action') return;
+    var tmp = document.createElement('div');
+    tmp.innerHTML = statusBox(build());
+    box.parentNode.replaceChild(tmp.firstChild, box);
+    fit();
+  }
+  function options(list, value, placeholder) {
+    var seen = false, h = '<option value="">' + esc(placeholder) + '</option>';
+    (list || []).forEach(function (o) { var on = clean(o) === clean(value); if (on) seen = true; h += '<option value="' + esc(o) + '"' + (on ? ' selected' : '') + '>' + esc(o) + '</option>'; });
+    if (clean(value) && !seen) h += '<option value="' + esc(value) + '" selected>' + esc(value) + ' (as on the ticket)</option>';
+    return h;
+  }
+  function changeScreen() {
+    var t = state.ticket, e = state.edit, lists = listsFor(t);
+    var lines = e.lines.map(function (l, i) {
+      var dis = l.remove ? ' disabled' : '';
+      var pick = lists
+        ? '<div><label>Cost center</label><select data-f="cc" data-i="' + i + '"' + dis + '>' + options(lists.cc, l.cc, 'Select') + '</select></div>' +
+          '<div><label>Product</label><select data-f="product" data-i="' + i + '"' + dis + '>' + options(lists.p, l.product, 'Select') + '</select></div>'
+        : '<div><label>Cost center</label><input type="text" data-f="cc" data-i="' + i + '" value="' + esc(l.cc) + '"' + dis + '></div>' +
+          '<div><label>Product</label><input type="text" data-f="product" data-i="' + i + '" value="' + esc(l.product) + '"' + dis + '></div>';
+      return '<div class="line' + (l.remove ? ' off' : '') + '"><h4><span>Line ' + (i + 1) + (l.isNew ? '<span class="tagnew">New</span>' : '') + '</span>' +
+        '<label class="check"><input type="checkbox" data-remove="' + i + '"' + (l.remove ? ' checked' : '') + '> ' + (l.isNew ? 'Take this new line out' : 'Remove this line') + '</label></h4>' +
+        '<div class="fields">' + pick +
+        '<div><label>Qty delivered</label><input type="number" inputmode="decimal" step="any" min="0" data-f="qty" data-i="' + i + '" value="' + esc(l.qty) + '"' + dis + '></div>' +
+        '<div><label>Delivery date</label><input type="date" data-f="date" data-i="' + i + '" value="' + esc(l.date) + '"' + dis + '></div>' +
+        '<div class="wide"><label>Comments</label><input type="text" data-f="comments" data-i="' + i + '" value="' + esc(l.comments) + '"' + dis + '></div></div></div>';
+    }).join('');
+    var week = e.week0 ? '<div style="margin-bottom:12px"><span class="lbl">Deliveries done for the week?</span><select data-f="week">' +
+      ['Yes', 'No'].map(function (v) { return '<option' + (e.week === v ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></div>' : '';
+    return backBar(t) + head(t) + '<div class="card"><div class="bar">Change lines <small>fix one, several or all</small></div>' + lines +
+      '<div class="line"><div class="btns"><button type="button" class="btn quiet" data-add="1">+ Add a line</button></div></div></div>' +
+      '<div class="card"><div class="pad">' + week + '<span class="lbl">Why is it changing?</span><textarea data-f="reason" placeholder="For example: wrong quantity on line 2">' + esc(e.reason) + '</textarea></div></div>' +
+      statusBox(build());
+  }
+  function cancelScreen() {
+    var t = state.ticket, e = state.edit;
+    return backBar(t) + head(t) + '<div class="card"><div class="bar">Cancel this ticket</div><div class="pad">' +
+      '<div class="muted" style="margin-bottom:10px">The whole ticket (' + qty(num(t.g)) + ' qty, ' + money(num(t.a)) + ') comes off the Sales Tracker. It can’t be brought back; a new ticket would have to be written.</div>' +
+      '<span class="lbl">Why is it being cancelled?</span><textarea data-f="reason" placeholder="For example: entered twice">' + esc(e.reason) + '</textarea></div></div>' + statusBox(build());
+  }
+  function creditTotal() {
+    return state.edit.lines.reduce(function (s, l) { return s + (l.price === null ? 0 : round2(l.price * num(l.credit))); }, 0);
+  }
+  function creditScreen() {
+    var t = state.ticket, e = state.edit;
+    var lines = e.lines.map(function (l, i) {
+      return '<div class="line"><h4><span>Line ' + (i + 1) + ' <small>' + esc(l.cc) + ' · ' + esc(l.product) + (l.price === null ? '' : ' · ' + price(l.price)) + '</small></span><small>' +
+        (l.left > 0 ? qty(l.left) + ' left to credit' : 'fully credited') + '</small></h4>' +
+        '<div class="fields"><div><label>Delivered</label><input type="text" value="' + qty(l.qty) + (l.credited ? '  (' + qty(l.credited) + ' already credited)' : '') + '" disabled></div>' +
+        '<div><label>Credit back (qty)</label><input type="number" inputmode="decimal" step="any" min="0" max="' + l.left + '" data-f="credit" data-i="' + i + '" value="' + esc(l.credit) + '"' + (l.left > 0 ? '' : ' disabled') + '></div></div></div>';
+    }).join('');
+    return backBar(t) + head(t) + '<div class="card"><div class="bar">Credit back <small>all, or only some lines</small></div>' + lines +
+      '<div class="line"><div class="btns"><button type="button" class="btn quiet" data-all="1">Credit everything that is left</button>' +
+      '<button type="button" class="btn quiet" data-all="0">Clear</button></div></div>' +
+      '<table><tbody><tr class="total"><td>Credit total</td><td class="n" id="credTotal">' + money(-creditTotal()) + '</td></tr></tbody></table></div>' +
+      '<div class="card"><div class="pad"><span class="lbl">Why is it being credited?</span><textarea data-f="reason" placeholder="For example: product returned">' + esc(e.reason) + '</textarea>' +
+      '<div class="muted" style="margin-top:8px">The credit becomes a ticket of its own. Ticket ' + esc(t.t) + ' stays as it is.</div></div></div>' + statusBox(build());
+  }
+
+  /* ---------- drawing ---------- */
+  var lastHeight = 0;
+  function fit() {
+    var h = Math.max(120, Math.ceil(el.getBoundingClientRect().height) + 6);
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+  function draw(keepFocus) {
+    var active = keepFocus && document.activeElement, key = active && active.getAttribute ? [active.getAttribute('data-f'), active.getAttribute('data-i'), active.id] : null;
+    var pos = null;
+    try { pos = active && active.selectionStart; } catch (e) {}
+    var h;
+    if (state.view === 'ticket' && state.ticket) h = ticketScreen();
+    else if (state.view === 'action' && state.ticket && state.action === 'change') h = changeScreen();
+    else if (state.view === 'action' && state.ticket && state.action === 'cancel') h = cancelScreen();
+    else if (state.view === 'action' && state.ticket && state.action === 'credit') h = creditScreen();
+    else h = listScreen();
+    el.innerHTML = h;
+    if (key && (key[0] || key[2])) {
+      var sel = key[2] ? '#' + key[2] : '[data-f="' + key[0] + '"]' + (key[1] !== null ? '[data-i="' + key[1] + '"]' : '');
+      var again = el.querySelector(sel);
+      if (again) { again.focus(); try { if (typeof pos === 'number') again.setSelectionRange(pos, pos); } catch (e) {} }
+    }
+    fit();
+    setTimeout(fit, 150);
+    publishSoon();
+  }
+  function today() { var d = new Date(), p = function (n) { return (n < 10 ? '0' : '') + n; }; return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }
+  function startAction(act) {
+    var t = state.ticket, w = weekOf(t);
+    state.action = act;
+    state.tried = false;
+    state.edit = { reason: '', week: w, week0: w, lines: (t.L || []).map(function (l, i) {
+      var q = num(l[2]), credited = num(l[6]), d = text(l[3]).slice(0, 10);
+      return { i: i, isNew: false, cc: text(l[0]), product: text(l[1]), qty: String(q), date: d, comments: text(l[4]), price: typeof l[5] === 'number' ? l[5] : null,
+               credited: credited, left: round2(Math.max(0, q - credited)), credit: '', remove: false,
+               o: { cc: text(l[0]), product: text(l[1]), qty: q, date: d, comments: text(l[4]) } };
+    }) };
+    state.view = 'action';
+    draw();
+    try { window.scrollTo(0, 0); } catch (e) {}
+  }
+
+  el.addEventListener('click', function (ev) {
+    var b = ev.target.closest ? ev.target.closest('[data-open],[data-back],[data-act],[data-all],[data-add]') : null;
+    if (!b) return;
+    if (b.hasAttribute('data-open')) {
+      var id = b.getAttribute('data-open');
+      state.ticket = myTickets().filter(function (t) { return t.t === id; })[0] || null;
+      state.view = state.ticket ? 'ticket' : 'list';
+      state.tried = false;
+      draw();
+    } else if (b.hasAttribute('data-back')) {
+      state.view = b.getAttribute('data-back') === 'ticket' ? 'ticket' : 'list';
+      if (state.view === 'list') state.ticket = null;
+      state.action = ''; state.edit = null; state.tried = false;
+      draw();
+    } else if (b.hasAttribute('data-act')) {
+      startAction(b.getAttribute('data-act'));
+    } else if (b.hasAttribute('data-all')) {
+      var all = b.getAttribute('data-all') === '1';
+      state.edit.lines.forEach(function (l) { l.credit = all && l.left > 0 ? String(l.left) : ''; });
+      draw();
+    } else if (b.hasAttribute('data-add')) {
+      state.edit.lines.push({ i: -1, isNew: true, cc: '', product: '', qty: '', date: today(), comments: '', price: null, credited: 0, left: 0, credit: '', remove: false, o: null });
+      draw();
+    }
+  });
+  function onField(t) {
+    if (t.id === 'search') { state.search = t.value; draw(true); return; }
+    var f = t.getAttribute('data-f'), i = t.getAttribute('data-i');
+    if (!f || !state.edit) return;
+    if (f === 'reason') { state.edit.reason = t.value; publishSoon(); return; }
+    if (f === 'week') { state.edit.week = t.value; publishSoon(); return; }
+    var l = state.edit.lines[+i];
+    if (!l) return;
+    if (f === 'qty') l.qty = t.value;
+    else if (f === 'date') l.date = t.value;
+    else if (f === 'comments') l.comments = t.value;
+    else if (f === 'cc') l.cc = t.value;
+    else if (f === 'product') l.product = t.value;
+    else if (f === 'credit') { l.credit = t.value; var ct = document.getElementById('credTotal'); if (ct) ct.textContent = money(-creditTotal()); }
+    publishSoon();
+  }
+  el.addEventListener('input', function (ev) { onField(ev.target); });
+  el.addEventListener('change', function (ev) {
+    var t = ev.target;
+    if (t.hasAttribute && t.hasAttribute('data-remove') && state.edit) {
+      var i = +t.getAttribute('data-remove'), l = state.edit.lines[i];
+      if (l && l.isNew) state.edit.lines.splice(i, 1); else if (l) l.remove = t.checked;
+      draw();
+      return;
+    }
+    if (t.tagName === 'SELECT') onField(t);
+  });
+
+  /* ---------- start ---------- */
+  function boot() {
+    readSettings();
+    draw();
+    var tries = 0;
+    (function again() {
+      readWho(function () {
+        if (state.view === 'list') draw(true);
+        if (!state.email && !state.name && tries++ < 20) setTimeout(again, 700);   // single sign-on fills the fields a moment after the page opens
+      });
+    })();
+    ['input_' + cfg.repEmailField, 'first_' + cfg.repNameField, 'last_' + cfg.repNameField].forEach(function (id) {
+      try { W.listenFromField(id, 'change', function () { readWho(function () { if (state.view === 'list') draw(true); }); }); } catch (e) {}
+    });
+  }
+  W.subscribe('ready', boot);
+  W.subscribe('submit', function () {
+    clearTimeout(pubTimer);
+    lastSent = '';
+    var b = publish();
+    if (!b.ok) {
+      state.tried = true;
+      draw();
+      var box = document.getElementById('status');
+      try { (box || el).scrollIntoView({ block: 'center' }); } catch (e) {}
+      try { W.sendSubmit({ valid: false, value: '' }); } catch (e) {}
+      return;
+    }
+    try { W.sendSubmit({ valid: true, value: JSON.stringify(b.rows) }); } catch (e) {}
+  });
+  window.addEventListener('resize', fit);
+
+  // Opened on its own (not inside Jotform): show sample tickets so the layout can be checked.
+  if (window.self === window.top) {
+    state.name = 'Mark Main'; state.email = 'mmain@vanta-chem.com';
+    state.data = { admins: ['mark main'], days: 60, lists: { 'boaz': { cc: ['Boaz 1', 'Boaz 2', 'Boaz 3'], p: ['VC-PSO700X', 'VC-SCW192', 'VC-SFW623'] } }, tickets: [
+      { t: 'VC0000116', s: 'Completed', c: 'Barn Owls', d: '700-WY', by: 'Ben Morse', e: 'bmorse@vanta-chem.com', dt: '11/23/2026', g: 205, a: 4100.25, cr: '', w: {}, sg: '1',
+        L: [['Owl 4', 'VC-PDO734', 110, '2026-11-23', '', 20.25, 55], ['Owl 7', 'VC-CIW239', 95, '2026-11-23', '', 14.4, 0]] },
+      { t: 'VC0000058', s: 'Active', c: 'Boaz', d: '100-WTX', by: 'Keeler Dunavin', e: 'kdunavin@vanta-chem.com', dt: '10/09/2026, 10/21/2026', g: 571, a: 8882.5, cr: '', w: { Boaz: 'No' }, sg: '2',
+        L: [['Boaz 1', 'VC-SCW192', 271, '2026-10-09', '', 16.5, 0], ['Boaz 2', 'VC-PSO700X', 300, '2026-10-21', 'second drop', 15, 0]] }
+    ] };
+    window.__vc = { state: state, build: build };
+    draw();
+  }
+})();
+</script>
+</body>
+</html>
