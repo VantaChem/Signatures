@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VantaChem - Order Lines</title>
+<!--
+  VantaChem "Order Lines" block for the NoisiV Sales Order Form (a Jotform custom widget).
+
+  It replaces the stock Configurable List on each "Order Lines - <customer>" field and keeps the
+  same settings and the same answer, so nothing else on the form or in the Sales Tracker changes:
+
+    Settings   fields   the same text the Customer Book sync already writes, one line per column:
+                          *Cost Center:dropdown:A,B,C:Select
+                          *Product:dropdown:X,Y:Select
+                          *QTY Delivered:number:Enter QTY:1,0,100000
+                          *Delivery Date:dateInput:m-d-y
+                          Comments:text:Optional
+    Answer     a list of lines, one per product delivered, exactly as before:
+                 [{"Cost Center":"..","Product":"..","QTY Delivered":"..","Delivery Date":"MM-DD-YYYY","Comments":".."}]
+
+  What is different for the rep:
+    - A location (cost center) is picked once, and any number of products can be added under it.
+    - The cost center box is a search box: type a few letters and the list narrows.
+
+  This page holds no customer names, locations, products or prices. They arrive from the form.
+-->
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #222; -webkit-text-size-adjust: 100%; }
+  * { box-sizing: border-box; }
+  #wrap { padding: 1px; }
+  .loc { background: #fff; border: 1px solid #4F5251; border-radius: 6px; margin-bottom: 12px; }
+  .bar { background: #4F5251; color: #fff; font-size: 12px; font-weight: bold; letter-spacing: .6px; text-transform: uppercase;
+         padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 4px 4px 0 0; min-height: 38px; }
+  .bar .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar .nm small { font-weight: normal; letter-spacing: 0; text-transform: none; font-size: 13px; opacity: .92; }
+  .pad { padding: 12px; }
+  label, .lbl { display: block; font-size: 11px; font-weight: bold; color: #6b6e6c; text-transform: uppercase; letter-spacing: .4px; padding-bottom: 4px; }
+  .req { color: #b42318; }
+  input[type=text], input[type=number], input[type=date], select {
+    display: block; width: 100%; height: 42px; font: inherit; font-size: 16px; color: #222; padding: 8px 10px; margin: 0;
+    border: 1px solid #c9ccc6; border-radius: 4px; background-color: #FFF9E5; box-shadow: none; }
+  input[type=date] { -webkit-appearance: none; appearance: none; min-width: 0; text-align: left; }
+  input[type=number] { font-weight: bold; color: #5f7c1f; text-align: center; }
+  input::placeholder { color: #8f948c; font-weight: normal; }
+  input:focus, select:focus { outline: 2px solid rgba(121,155,44,.45); outline-offset: 0; border-color: #799B2C; }
+  .bad { border-color: #b42318 !important; background-color: #fff1ef !important; }
+
+  /* the cost center search box */
+  .combo { position: relative; }
+  .combo input { padding-right: 38px; }
+  .combo .chev { position: absolute; right: 0; top: 0; width: 38px; height: 42px; display: flex; align-items: center; justify-content: center;
+                 color: #4F5251; font-size: 13px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+  .list { margin-top: 4px; border: 1px solid #799B2C; border-radius: 4px; background: #fff; max-height: 262px; overflow-y: auto;
+          -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+  .list[hidden] { display: none; }
+  .opt { display: block; width: 100%; text-align: left; font: inherit; font-size: 16px; color: #222; background: #fff; border: 0;
+         border-top: 1px solid #eceee8; padding: 11px 12px; margin: 0; cursor: pointer; }
+  .opt:first-child { border-top: 0; }
+  .opt.on, .opt:hover { background: #eef4de; }
+  .opt b { color: #3f5512; }
+  .none, .more { padding: 10px 12px; font-size: 13px; color: #6b6e6c; }
+  .more { border-top: 1px solid #eceee8; background: #f7f8f4; }
+
+  /* one product under a location */
+  .line { border-top: 1px solid #dfe2da; margin-top: 14px; padding-top: 12px; }
+  .line.first { border-top: 0; margin-top: 12px; padding-top: 0; }
+  .lh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; min-height: 30px; }
+  .lh span { font-size: 12px; font-weight: bold; letter-spacing: .5px; text-transform: uppercase; color: #3f5512; }
+  .fields { display: flex; flex-wrap: wrap; gap: 10px 12px; }
+  .fields > div { flex: 1 1 150px; min-width: 0; }
+  .fields > div.fp { flex: 2 1 220px; }
+  .fields > div.fc { flex: 1 0 100%; }
+  button { font-family: inherit; }
+  .add { display: inline-block; background: #f1f3ee; color: #4F5251; border: 1px solid #d8dbd3; border-radius: 6px; font-weight: bold; font-size: 14px;
+         padding: 10px 16px; cursor: pointer; }
+  .add:hover { background: #e8ebe3; }
+  .addline { margin-top: 14px; width: 100%; text-align: center; border-style: dashed; border-color: #9aa58a; background: #f6f8f0; color: #3f5512; }
+  .rm { background: #e9ebf5; color: #2c3345; border: 1px solid #c9cde0; border-radius: 4px; font-size: 12px; font-weight: bold; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+  .bar .rm { background: transparent; color: #fff; border-color: rgba(255,255,255,.55); text-transform: none; letter-spacing: 0; }
+  .rm.sure { background: #b42318 !important; color: #fff !important; border-color: #b42318 !important; }
+  .status { border: 1px solid #b42318; background: #fff1ef; color: #7a1a12; border-radius: 6px; padding: 10px 12px; margin: 0 0 12px 0; font-size: 13px; }
+  .status ul { margin: 6px 0 0 0; padding-left: 18px; }
+  .status li { margin: 2px 0; }
+  .note { background: #fff; border: 1px solid #c9ccc6; border-radius: 6px; padding: 10px 12px; color: #6b6e6c; font-size: 13px; }
+  @media (max-width: 480px) {
+    .fields > div, .fields > div.fp { flex: 1 0 100%; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="note">Loading the order lines…</div></div>
+<script>
+(function () {
+  'use strict';
+  var W = window.JFCustomWidget;
+  var el = document.getElementById('wrap');
+  var MAX_SHOWN = 60;       // most matches listed at once in the cost center search
+  var MAX_QTY = 100000;     // same upper limit the block had before
+
+  /* ---------- small helpers ---------- */
+  function text(v) { return v === null || v === undefined ? '' : String(v); }
+  function unesc(s) { return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'"); }
+  function clean(v) { return unesc(text(v)).replace(/\s+/g, ' ').trim(); }
+  function low(v) { return clean(v).toLowerCase(); }
+  function esc(s) { return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function two(n) { return (n < 10 ? '0' : '') + n; }
+  // 2026-11-24 -> 11-24-2026 (how the form has always stored delivery dates)
+  function toUs(iso) { var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text(iso)); return m ? m[2] + '-' + m[3] + '-' + m[1] : ''; }
+  // 11-24-2026 or 11/24/2026 -> 2026-11-24
+  function toIso(us) {
+    var m = /^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/.exec(clean(us));
+    if (m) return m[3] + '-' + two(+m[1]) + '-' + two(+m[2]);
+    return /^\d{4}-\d{2}-\d{2}$/.test(clean(us)) ? clean(us) : '';
+  }
+  function realDate(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text(iso));
+    if (!m) return false;
+    var d = new Date(+m[1], +m[2] - 1, +m[3]);
+    return d.getFullYear() === +m[1] && d.getMonth() === +m[2] - 1 && d.getDate() === +m[3];
+  }
+  function qtyOk(v) {
+    var s = clean(v);
+    if (!/^\d*\.?\d+$|^\d+\.$/.test(s)) return false;
+    var n = parseFloat(s);
+    return isFinite(n) && n > 0 && n <= MAX_QTY;
+  }
+  function inList(list, v) { var l = low(v); for (var i = 0; i < list.length; i++) if (low(list[i]) === l) return list[i]; return null; }
+
+  /* ---------- settings: the same "fields" text the Configurable List used ---------- */
+  var cfg = { ok: false, cc: 'Cost Center', product: 'Product', qty: 'QTY Delivered', date: 'Delivery Date', comments: 'Comments',
+              ccList: [], pList: [], qtyHint: 'Enter QTY', commentsHint: 'Optional' };
+  function dropdownItems(rest) {
+    // "A,B,C:Select" -> [A, B, C]   (the last ":" part is the placeholder)
+    var body = rest, cut = rest.lastIndexOf(':');
+    if (cut !== -1) body = rest.slice(0, cut);
+    return body.split(',').map(clean).filter(Boolean);
+  }
+  function readSettings() {
+    var s = {};
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    var drops = [], nums = [], dates = [], texts = [];
+    unesc(text(s.fields)).split(/\r?\n/).forEach(function (line) {
+      line = line.replace(/^\s+|\s+$/g, '');
+      if (!line) return;
+      var a = line.indexOf(':'); if (a === -1) return;
+      var b = line.indexOf(':', a + 1);
+      var label = clean(line.slice(0, a).replace(/^\*/, ''));
+      var type = low(b === -1 ? line.slice(a + 1) : line.slice(a + 1, b));
+      var rest = b === -1 ? '' : line.slice(b + 1);
+      if (!label) return;
+      if (type === 'dropdown') drops.push({ label: label, items: dropdownItems(rest) });
+      else if (type === 'number') nums.push({ label: label, hint: clean(rest.split(':')[0]) });
+      else if (type === 'dateinput') dates.push({ label: label });
+      else if (type === 'text') texts.push({ label: label, hint: clean(rest.split(':')[0]) });
+    });
+    if (drops.length >= 2 && nums.length && dates.length) {
+      cfg.cc = drops[0].label; cfg.ccList = drops[0].items;
+      cfg.product = drops[1].label; cfg.pList = drops[1].items;
+      cfg.qty = nums[0].label; if (nums[0].hint) cfg.qtyHint = nums[0].hint;
+      cfg.date = dates[0].label;
+      if (texts.length) { cfg.comments = texts[0].label; if (texts[0].hint) cfg.commentsHint = texts[0].hint; }
+      cfg.ok = cfg.ccList.length > 0 && cfg.pList.length > 0;
+    }
+  }
+
+  /* ---------- what the rep has entered ---------- */
+  function newLine(date) { return { product: '', qty: '', date: date || '', comments: '' }; }
+  function newLoc() { return { cc: '', lines: [newLine('')] }; }
+  var state = { locs: [newLoc()], tried: false, open: -1, hi: 0, typed: false };
+
+  // A product box left completely empty, or a location added and never touched, is simply left out:
+  // it is not sent and it does not hold the ticket up. (The date alone does not count; it is filled in for the rep.)
+  function lineBlank(ln) { return !clean(ln.product) && !clean(ln.qty) && !clean(ln.comments); }
+  function kept() {
+    var out = [];
+    state.locs.forEach(function (loc, l) {
+      var used = [];
+      loc.lines.forEach(function (ln, j) { if (!lineBlank(ln)) used.push(j); });
+      if (!used.length && !clean(loc.cc)) return;            // untouched location
+      if (!used.length) used = [0];                           // a location with no product yet: its first box must be filled in
+      used.forEach(function (j) { out.push({ l: l, j: j, loc: loc, ln: loc.lines[j] }); });
+    });
+    return out;
+  }
+  function rows() {
+    return kept().map(function (k) {
+      var r = {};
+      r[cfg.cc] = clean(k.loc.cc);
+      r[cfg.product] = clean(k.ln.product);
+      r[cfg.qty] = qtyOk(k.ln.qty) ? String(parseFloat(clean(k.ln.qty))) : clean(k.ln.qty);   // .5 -> 0.5, 55.50 -> 55.5
+      r[cfg.date] = toUs(k.ln.date);
+      r[cfg.comments] = text(k.ln.comments).replace(/\s+/g, ' ').trim();
+      return r;
+    });
+  }
+  function isBlank() { return kept().length === 0; }
+  // every problem, as { l: location, j: product (or -1), f: field, msg }
+  function problems() {
+    var out = [], many = state.locs.length > 1, seenLoc = {};
+    kept().forEach(function (k) {
+      var l = k.l, j = k.j, loc = k.loc, ln = k.ln;
+      if (!seenLoc[l]) {
+        seenLoc[l] = true;
+        if (!clean(loc.cc)) out.push({ l: l, j: -1, f: 'cc', msg: (many ? 'Location ' + (l + 1) : 'The location') + ': pick the ' + cfg.cc.toLowerCase() + '.' });
+      }
+      var w = (many ? 'Location ' + (l + 1) : '') + (loc.lines.length > 1 ? (many ? ', product ' : 'Product ') + (j + 1) : '');
+      w = w ? w + ': ' : '';
+      var say = function (m) { return w ? w + m : m.charAt(0).toUpperCase() + m.slice(1); };
+      if (!clean(ln.product)) out.push({ l: l, j: j, f: 'product', msg: say('pick the ' + cfg.product.toLowerCase() + '.') });
+      if (!clean(ln.qty)) out.push({ l: l, j: j, f: 'qty', msg: say('enter the quantity.') });
+      else if (!qtyOk(ln.qty)) out.push({ l: l, j: j, f: 'qty', msg: say('the quantity must be a number above 0' + (parseFloat(ln.qty) > MAX_QTY ? ' and no more than ' + MAX_QTY.toLocaleString('en-US') : '') + '.') });
+      if (!ln.date) out.push({ l: l, j: j, f: 'date', msg: say('pick the ' + cfg.date.toLowerCase() + '.') });
+      else if (!dateOk(ln.date)) out.push({ l: l, j: j, f: 'date', msg: say('check the ' + cfg.date.toLowerCase() + ' - the year looks wrong.') });
+    });
+    return out;
+  }
+  function dateOk(iso) {
+    if (!realDate(iso)) return false;
+    var y = +iso.slice(0, 4), now = new Date().getFullYear();
+    return y >= now - 1 && y <= now + 1;
+  }
+
+  /* ---------- telling the form ---------- */
+  var lastSent = null, pubTimer = null;
+  function currentValue() { return isBlank() ? '' : JSON.stringify(rows()); }
+  function publish() {
+    var v = currentValue();
+    if (v !== lastSent) {
+      lastSent = v;
+      try { W.sendData({ value: v }); } catch (e) {}
+    }
+    return v;
+  }
+  function publishSoon() { clearTimeout(pubTimer); pubTimer = setTimeout(function () { publish(); refreshStatus(); }, 250); }
+
+  /* ---------- drawing ---------- */
+  var lastHeight = 0;
+  function fit() {
+    var h = Math.max(60, Math.ceil(el.getBoundingClientRect().height) + 6);
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+  function options(list, value, placeholder) {
+    var seen = false, h = '<option value="">' + esc(placeholder) + '</option>';
+    list.forEach(function (o) { var on = low(o) === low(value) && clean(value); if (on) seen = true; h += '<option value="' + esc(o) + '"' + (on ? ' selected' : '') + '>' + esc(o) + '</option>'; });
+    if (clean(value) && !seen) h += '<option value="' + esc(value) + '" selected>' + esc(value) + '</option>';
+    return h;
+  }
+  function badSet() {
+    var set = {};
+    if (state.tried) problems().forEach(function (p) { set[p.l + '|' + p.j + '|' + p.f] = true; });
+    return set;
+  }
+  function lineHtml(loc, l, ln, j, bad) {
+    var b = function (f) { return bad[l + '|' + j + '|' + f] ? ' class="bad"' : ''; };
+    var many = loc.lines.length > 1;
+    return '<div class="line' + (j === 0 ? ' first' : '') + '" data-l="' + l + '" data-j="' + j + '">' +
+      (many ? '<div class="lh"><span>Product ' + (j + 1) + '</span><button type="button" class="rm" data-rmline="' + l + '|' + j + '">Remove</button></div>' : '') +
+      '<div class="fields">' +
+        '<div class="fp"><label>' + esc(cfg.product) + ' <span class="req">*</span></label><select data-f="product"' + b('product') + '>' + options(cfg.pList, ln.product, 'Select') + '</select></div>' +
+        '<div class="fq"><label>' + esc(cfg.qty) + ' <span class="req">*</span></label><input type="number" inputmode="decimal" step="any" min="0" data-f="qty" placeholder="' + esc(cfg.qtyHint) + '" value="' + esc(ln.qty) + '"' + b('qty') + '></div>' +
+        '<div class="fd"><label>' + esc(cfg.date) + ' <span class="req">*</span></label><input type="date" data-f="date" value="' + esc(ln.date) + '"' + b('date') + '></div>' +
+        '<div class="fc"><label>' + esc(cfg.comments) + '</label><input type="text" data-f="comments" placeholder="' + esc(cfg.commentsHint) + '" value="' + esc(ln.comments) + '" autocomplete="off"></div>' +
+      '</div></div>';
+  }
+  function locHtml(loc, l, bad) {
+    var many = state.locs.length > 1;
+    return '<div class="loc" data-l="' + l + '">' +
+      '<div class="bar"><span class="nm">Location' + (many ? ' ' + (l + 1) : '') + '<small id="nm' + l + '">' + (clean(loc.cc) ? ' &middot; ' + esc(loc.cc) : '') + '</small></span>' +
+        (many ? '<button type="button" class="rm" data-rmloc="' + l + '">Remove location</button>' : '') + '</div>' +
+      '<div class="pad">' +
+        '<label for="cc' + l + '">' + esc(cfg.cc) + ' <span class="req">*</span></label>' +
+        '<div class="combo"><input type="text" id="cc' + l + '" class="cc' + (bad[l + '|-1|cc'] ? ' bad' : '') + '" data-cc="' + l + '" value="' + esc(loc.cc) + '" placeholder="Type to search, or tap to pick" ' +
+          'autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done" role="combobox" aria-expanded="false" aria-controls="list' + l + '">' +
+          '<span class="chev" data-chev="' + l + '" aria-hidden="true">&#9660;</span>' +
+          '<div class="list" id="list' + l + '" role="listbox" hidden></div></div>' +
+        loc.lines.map(function (ln, j) { return lineHtml(loc, l, ln, j, bad); }).join('') +
+        '<button type="button" class="add addline" data-addline="' + l + '">+ Add product to this location</button>' +
+      '</div></div>';
+  }
+  function statusHtml() {
+    if (!state.tried) return '';
+    var p = problems();
+    if (!p.length) return '';
+    return '<div class="status" id="status"><b>Before you can continue:</b><ul>' + p.slice(0, 8).map(function (x) { return '<li>' + esc(x.msg) + '</li>'; }).join('') +
+      (p.length > 8 ? '<li>and ' + (p.length - 8) + ' more.</li>' : '') + '</ul></div>';
+  }
+  function draw() {
+    if (!cfg.ok) {
+      el.innerHTML = '<div class="note">The cost centers and products for this customer could not be loaded. Close the form, open it again, and if this message is still here let the office know.</div>';
+      fit();
+      return;
+    }
+    state.open = -1;
+    var bad = badSet();
+    el.innerHTML = '<div id="statusBox">' + statusHtml() + '</div>' +
+      state.locs.map(function (loc, l) { return locHtml(loc, l, bad); }).join('') +
+      '<button type="button" class="add" data-addloc="1">+ Add another location</button>';
+    fit();
+  }
+  function refreshStatus() {
+    var box = document.getElementById('statusBox');
+    if (!box) return;
+    box.innerHTML = statusHtml();
+    if (state.tried) {
+      var bad = badSet();
+      [].forEach.call(el.querySelectorAll('[data-f],[data-cc]'), function (n) {
+        var line = n.closest('.line'), loc = n.closest('.loc');
+        var key = n.hasAttribute('data-cc') ? loc.getAttribute('data-l') + '|-1|cc' : line.getAttribute('data-l') + '|' + line.getAttribute('data-j') + '|' + n.getAttribute('data-f');
+        if (n.getAttribute('data-f') === 'comments') return;
+        n.classList.toggle('bad', !!bad[key]);
+      });
+    }
+    fit();
+  }
+
+  /* ---------- the cost center search ---------- */
+  function matches(q) {
+    var words = low(q).split(' ').filter(Boolean);
+    if (!words.length) return cfg.ccList.slice();
+    var first = [], rest = [];
+    cfg.ccList.forEach(function (o) {
+      var lo = low(o);
+      if (!words.every(function (w) { return lo.indexOf(w) !== -1; })) return;
+      (lo.indexOf(words[0]) === 0 ? first : rest).push(o);
+    });
+    return first.concat(rest);
+  }
+  function mark(o, q) {
+    var w = low(q).split(' ').filter(Boolean)[0];
+    if (!w) return esc(o);
+    var at = o.toLowerCase().indexOf(w);
+    if (at === -1) return esc(o);
+    return esc(o.slice(0, at)) + '<b>' + esc(o.slice(at, at + w.length)) + '</b>' + esc(o.slice(at + w.length));
+  }
+  function fillList(l) {
+    var input = document.getElementById('cc' + l), list = document.getElementById('list' + l);
+    if (!input || !list) return;
+    var q = state.typed ? input.value : '';
+    var found = matches(q);
+    state.found = found;
+    if (state.hi >= found.length) state.hi = 0;
+    var h = found.slice(0, MAX_SHOWN).map(function (o, i) {
+      return '<button type="button" tabindex="-1" class="opt' + (i === state.hi && state.typed ? ' on' : '') + '" role="option" data-pick="' + l + '" data-v="' + esc(o) + '">' + mark(o, q) + '</button>';
+    }).join('');
+    if (!found.length) h = '<div class="none">Nothing matches &ldquo;' + esc(clean(q)) + '&rdquo;. Check the spelling, or clear the box to see the whole list.</div>';
+    else if (found.length > MAX_SHOWN) h += '<div class="more">' + (found.length - MAX_SHOWN) + ' more. Type a few letters to narrow the list.</div>';
+    list.innerHTML = h;
+    fit();
+  }
+  function openList(l) {
+    if (state.open !== -1 && state.open !== l) closeList(state.open, true);
+    var input = document.getElementById('cc' + l), list = document.getElementById('list' + l);
+    if (!input || !list) return;
+    state.open = l; state.hi = 0; state.typed = false;
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    fillList(l);
+    // once the keyboard is up, bring the box and its list into view together
+    setTimeout(function () {
+      if (state.open !== l) return;
+      var box = input.parentNode;
+      try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
+    }, 350);
+  }
+  function setCc(l, v) {
+    var loc = state.locs[l];
+    if (!loc) return;
+    loc.cc = v;
+    var input = document.getElementById('cc' + l), nm = document.getElementById('nm' + l);
+    if (input) input.value = v;
+    if (nm) nm.innerHTML = clean(v) ? ' &middot; ' + esc(v) : '';
+  }
+  // commit: keep what was typed only if it is exactly one of the cost centers; otherwise go back to the last pick
+  function closeList(l, commit) {
+    var input = document.getElementById('cc' + l), list = document.getElementById('list' + l), loc = state.locs[l];
+    if (state.open === l) state.open = -1;
+    if (list) { list.hidden = true; list.innerHTML = ''; }
+    if (input) input.setAttribute('aria-expanded', 'false');
+    if (commit && input && loc) {
+      var t = clean(input.value), exact = inList(cfg.ccList, t);
+      if (!t) setCc(l, '');
+      else if (exact) setCc(l, exact);
+      else setCc(l, loc.cc);
+      publishSoon();
+    }
+    fit();
+  }
+  function pick(l, v) {
+    setCc(l, v);
+    closeList(l, false);
+    var input = document.getElementById('cc' + l);
+    if (input) { try { input.blur(); } catch (e) {} }
+    publish();
+    refreshStatus();
+  }
+
+  /* ---------- taps and typing ---------- */
+  var sureTimer = null;
+  function confirmTap(btn) {
+    if (btn.classList.contains('sure')) return true;
+    [].forEach.call(el.querySelectorAll('.rm.sure'), function (b) { b.classList.remove('sure'); b.textContent = b.getAttribute('data-was'); });
+    btn.setAttribute('data-was', btn.textContent);
+    btn.classList.add('sure');
+    btn.textContent = 'Tap again to remove';
+    clearTimeout(sureTimer);
+    sureTimer = setTimeout(function () { if (btn.classList.contains('sure')) { btn.classList.remove('sure'); btn.textContent = btn.getAttribute('data-was'); } }, 4000);
+    return false;
+  }
+  var lineIsEmpty = lineBlank;
+
+  el.addEventListener('mousedown', function (ev) {
+    // keep the search box in use while an option or the arrow is pressed
+    if (ev.target.closest && ev.target.closest('.list,.chev')) ev.preventDefault();
+  });
+  el.addEventListener('click', function (ev) {
+    var t = ev.target.closest ? ev.target.closest('[data-pick],[data-chev],[data-addline],[data-addloc],[data-rmline],[data-rmloc]') : null;
+    if (!t) return;
+    if (t.hasAttribute('data-pick')) { pick(+t.getAttribute('data-pick'), t.getAttribute('data-v')); return; }
+    if (t.hasAttribute('data-chev')) {
+      var l0 = +t.getAttribute('data-chev'), inp = document.getElementById('cc' + l0);
+      if (state.open === l0) { closeList(l0, true); try { inp.blur(); } catch (e) {} }
+      else if (inp) inp.focus();
+      return;
+    }
+    if (t.hasAttribute('data-addline')) {
+      var loc = state.locs[+t.getAttribute('data-addline')];
+      if (!loc) return;
+      loc.lines.push(newLine(loc.lines.length ? loc.lines[loc.lines.length - 1].date : ''));   // same stop, so the same date to start with
+      draw(); publish();
+      return;
+    }
+    if (t.hasAttribute('data-addloc')) { state.locs.push(newLoc()); draw(); publish(); return; }
+    if (t.hasAttribute('data-rmline')) {
+      var p = t.getAttribute('data-rmline').split('|'), lc = state.locs[+p[0]];
+      if (!lc || lc.lines.length < 2) return;
+      if (!lineIsEmpty(lc.lines[+p[1]]) && !confirmTap(t)) return;
+      lc.lines.splice(+p[1], 1);
+      draw(); publish();
+      return;
+    }
+    if (t.hasAttribute('data-rmloc')) {
+      var li = +t.getAttribute('data-rmloc'), lo2 = state.locs[li];
+      if (!lo2 || state.locs.length < 2) return;
+      if ((clean(lo2.cc) || !lo2.lines.every(lineIsEmpty)) && !confirmTap(t)) return;
+      state.locs.splice(li, 1);
+      draw(); publish();
+    }
+  });
+  el.addEventListener('focusin', function (ev) {
+    var t = ev.target;
+    if (t.hasAttribute && t.hasAttribute('data-cc')) {
+      openList(+t.getAttribute('data-cc'));
+      try { t.select(); } catch (e) {}
+    }
+  });
+  el.addEventListener('focusout', function (ev) {
+    var t = ev.target;
+    if (t.hasAttribute && t.hasAttribute('data-cc')) {
+      var l = +t.getAttribute('data-cc');
+      setTimeout(function () { if (state.open === l && document.activeElement !== t) closeList(l, true); }, 180);
+    }
+  });
+  el.addEventListener('keydown', function (ev) {
+    var t = ev.target;
+    if (!t.hasAttribute || !t.hasAttribute('data-cc')) return;
+    var l = +t.getAttribute('data-cc');
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      if (state.open === l && state.found && state.found.length && state.typed) pick(l, state.found[Math.min(state.hi, state.found.length - 1)]);
+      else if (state.open === l) { closeList(l, true); try { t.blur(); } catch (e) {} }
+    } else if (ev.key === 'Escape') {
+      t.value = state.locs[l] ? state.locs[l].cc : '';
+      closeList(l, false);
+      try { t.blur(); } catch (e) {}
+    } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      if (state.open !== l) return;
+      ev.preventDefault();
+      var n = Math.min((state.found || []).length, MAX_SHOWN);
+      if (!n) return;
+      state.typed = true;
+      state.hi = (state.hi + (ev.key === 'ArrowDown' ? 1 : n - 1)) % n;
+      var keep = t.value; fillList(l); t.value = keep;
+      var on = document.querySelector('#list' + l + ' .opt.on');
+      if (on && on.scrollIntoView) { try { on.scrollIntoView({ block: 'nearest' }); } catch (e) {} }
+    }
+  });
+  function onField(t) {
+    if (t.hasAttribute('data-cc')) {
+      var l = +t.getAttribute('data-cc');
+      if (state.open !== l) openList(l);
+      state.typed = true; state.hi = 0;
+      fillList(l);
+      return;
+    }
+    var f = t.getAttribute('data-f'), line = t.closest('.line');
+    if (!f || !line) return;
+    var loc = state.locs[+line.getAttribute('data-l')], ln = loc && loc.lines[+line.getAttribute('data-j')];
+    if (!ln) return;
+    ln[f] = t.value;
+    publishSoon();
+  }
+  el.addEventListener('input', function (ev) { if (ev.target.hasAttribute) onField(ev.target); });
+  el.addEventListener('change', function (ev) {
+    var t = ev.target;
+    if (t.hasAttribute && t.hasAttribute('data-f')) { onField(t); clearTimeout(pubTimer); publish(); refreshStatus(); }
+  });
+  window.addEventListener('resize', fit);
+  try { new ResizeObserver(function () { fit(); }).observe(el); } catch (e) {}
+
+  /* ---------- a ticket that already has lines (opened again, or a saved draft) ---------- */
+  function load(v) {
+    var list = v;
+    if (typeof list === 'string') { var s = list.trim(); if (!s) return false; try { list = JSON.parse(s); } catch (e) { return false; } }
+    if (list && !Array.isArray(list) && list.value !== undefined) return load(list.value);
+    if (!Array.isArray(list) || !list.length) return false;
+    var get = function (row, name) {
+      var keys = Object.keys(row || {});
+      for (var i = 0; i < keys.length; i++) if (low(keys[i]) === low(name)) return row[keys[i]];
+      return '';
+    };
+    var locs = [], at = {};
+    list.forEach(function (row) {
+      if (!row || typeof row !== 'object') return;
+      var cc = clean(get(row, cfg.cc)), key = low(cc);
+      var ln = { product: clean(get(row, cfg.product)), qty: clean(get(row, cfg.qty)), date: toIso(get(row, cfg.date)), comments: clean(get(row, cfg.comments)) };
+      if (key && at[key] !== undefined) locs[at[key]].lines.push(ln);
+      else { if (key) at[key] = locs.length; locs.push({ cc: cc, lines: [ln] }); }
+    });
+    if (!locs.length) return false;
+    state.locs = locs;
+    return true;
+  }
+
+  /* ---------- start ---------- */
+  var booted = false;
+  function boot(data) {
+    var first = !booted;
+    booted = true;
+    readSettings();
+    var onBuilder = false;
+    try { onBuilder = !!W.isWidgetOnBuilder(); } catch (e) {}
+    if (onBuilder) { el.innerHTML = '<div class="note">Order lines: the rep picks a location, then adds the products delivered there.</div>'; fit(); return; }
+    // the form can say "ready" again when the block is shown after being hidden; only the first time may bring saved lines in
+    if (first && data && data.value) { try { if (load(data.value)) lastSent = null; } catch (e) {} }
+    draw();
+    if (!isBlank()) publish();
+  }
+  W.subscribe('ready', boot);
+  W.subscribe('submit', function () {
+    clearTimeout(pubTimer);
+    if (state.open !== -1) closeList(state.open, true);
+    var v = currentValue(), bad = !cfg.ok || isBlank() || problems().length > 0;
+    lastSent = v;
+    if (bad) {
+      state.tried = true;
+      draw();
+      try { W.sendSubmit({ valid: false, value: v }); } catch (e) {}
+      // the form empties this field when it is told "not ready"; hand the lines back so the totals stay on screen
+      if (v) setTimeout(function () { lastSent = null; publish(); }, 600);
+      return;
+    }
+    try { W.sendSubmit({ valid: true, value: v }); } catch (e) {}
+  });
+
+  // for checking the page on its own
+  window.__ol = { state: state, cfg: cfg, rows: rows, problems: problems, value: currentValue, load: load, draw: draw };
+})();
+</script>
+</body>
+</html>
