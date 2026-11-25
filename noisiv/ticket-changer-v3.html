@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VantaChem - Change a Ticket</title>
+<!--
+  VantaChem "Change a Ticket" picker for the NoisiV app (a Jotform custom widget).
+
+  Shows the signed-in rep's tickets from the Sales Tracker's Orders tab and lets them start a
+  change, a cancel or a credit back:
+    - Active tickets:    change lines, cancel, (credit back - office only)
+    - Completed tickets: credit back only
+  The ticket list is not fetched from anywhere: the Sales Tracker writes it into this field's
+  settings every few minutes (t0, t1, ... = one long base64 text, cut in pieces; tn = how many).
+
+  STAGE 1: look and feel only. Nothing is saved yet - the Submit step comes in Stage 2.
+
+  Settings (set on the field in Jotform):
+    repEmailField  id of the "Sales Rep Email" field (filled in by single sign-on)
+    repNameField   id of the "Sales Rep Name" field
+    tn, t0 ... t11 the ticket list, written by the Sales Tracker
+-->
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 15px; color: #222; -webkit-text-size-adjust: 100%; }
+  * { box-sizing: border-box; }
+  #wrap { padding: 1px; }
+  .card { background: #fff; border: 1px solid #4F5251; border-radius: 6px; overflow: hidden; margin-bottom: 12px; }
+  .bar { background: #4F5251; color: #fff; font-size: 12px; font-weight: bold; letter-spacing: .6px; text-transform: uppercase; padding: 9px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .bar small { font-weight: normal; letter-spacing: 0; text-transform: none; opacity: .85; }
+  .pad { padding: 12px; }
+  .muted { color: #6b6f68; font-size: 13px; }
+  .note { background: #fff8e1; border: 1px solid #e0a526; color: #5c4400; border-radius: 6px; padding: 9px 11px; font-size: 13px; margin-bottom: 12px; }
+  input[type=text], input[type=number], input[type=date], textarea {
+    width: 100%; font: inherit; font-size: 16px; padding: 9px 10px; border: 1px solid #9aa097; border-radius: 5px; background: #fff; color: #222; }
+  textarea { min-height: 74px; resize: vertical; }
+  input:focus, textarea:focus { outline: 2px solid #799B2C; outline-offset: 0; border-color: #799B2C; }
+  .search { margin-bottom: 12px; }
+  .row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: #fff; border: 0; border-top: 1px solid #e6e8e2;
+         padding: 12px; font: inherit; color: #222; cursor: pointer; }
+  .row:first-child { border-top: 0; }
+  .row:hover, .row:focus { background: #f3f6ea; outline: none; }
+  .row .main { flex: 1; min-width: 0; }
+  .row .tk { font-weight: bold; font-size: 15px; }
+  .row .sub { color: #555; font-size: 13px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .amt { text-align: right; white-space: nowrap; font-size: 13px; color: #333; }
+  .row .amt b { display: block; font-size: 15px; color: #3f5512; }
+  .row .go { color: #799B2C; font-size: 20px; line-height: 1; }
+  .pill { display: inline-block; font-size: 11px; font-weight: bold; letter-spacing: .4px; text-transform: uppercase; border-radius: 999px; padding: 3px 9px; vertical-align: middle; }
+  .pill.active { background: #e6f1d0; color: #3f5512; }
+  .pill.done { background: #e3e6e1; color: #3d403c; }
+  .pill.credit { background: #ffe9cc; color: #7a4300; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .facts div span { display: block; font-size: 11px; font-weight: bold; letter-spacing: .5px; text-transform: uppercase; color: #6b6f68; }
+  .facts div b { font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #D9D9D9; color: #222; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: .4px; text-align: left; padding: 7px 9px; white-space: nowrap; }
+  td { padding: 8px 9px; border-top: 1px solid #e6e8e2; font-size: 14px; vertical-align: top; }
+  th.n, td.n { text-align: right; white-space: nowrap; }
+  tr.total td { background: #eef3e1; border-top: 2px solid #799B2C; font-weight: bold; }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; }
+  .btn { flex: 1 1 150px; font: inherit; font-weight: bold; font-size: 15px; padding: 13px 14px; border-radius: 6px; border: 1px solid #4F5251; background: #fff; color: #222; cursor: pointer; text-align: center; }
+  .btn.primary { background: #799B2C; border-color: #799B2C; color: #fff; }
+  .btn.danger { background: #fff; border-color: #b42318; color: #b42318; }
+  .btn.amber { background: #fff; border-color: #b96a00; color: #8a4f00; }
+  .btn.quiet { flex: 0 0 auto; border-color: #9aa097; font-weight: normal; padding: 9px 14px; }
+  .btn:focus { outline: 2px solid #799B2C; outline-offset: 2px; }
+  .line { border-top: 1px solid #e6e8e2; padding: 12px; }
+  .line:first-child { border-top: 0; }
+  .line.off { background: #f5f5f3; }
+  .line.off .fields { opacity: .45; }
+  .line h4 { margin: 0 0 8px; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .line h4 small { font-weight: normal; color: #555; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .fields label { display: block; font-size: 11px; font-weight: bold; letter-spacing: .4px; text-transform: uppercase; color: #6b6f68; margin-bottom: 3px; }
+  .fields .wide { grid-column: 1 / -1; }
+  .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: normal; color: #b42318; cursor: pointer; }
+  .check input { width: 18px; height: 18px; }
+  .lbl { display: block; font-size: 11px; font-weight: bold; letter-spacing: .4px; text-transform: uppercase; color: #6b6f68; margin: 0 0 4px; }
+  .err { color: #b42318; font-size: 13px; margin-top: 6px; }
+  @media (max-width: 480px) {
+    th, td { padding: 6px 6px; font-size: 12px; }
+    th { font-size: 10px; letter-spacing: 0; }
+    .hide-s { display: none; }
+    .fields { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="card"><div class="pad muted">Loading your tickets…</div></div></div>
+<script>
+(function () {
+  'use strict';
+  var W = window.JFCustomWidget;
+  var el = document.getElementById('wrap');
+  var cfg = { repEmailField: '15', repNameField: '62' };
+  var state = { data: null, dataError: '', email: '', name: '', view: 'list', ticket: null, action: '', search: '', edit: null };
+
+  /* ---------- helpers ---------- */
+  function text(v) { return v === null || v === undefined ? '' : String(v); }
+  function unesc(s) { return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&amp;/g, '&'); }
+  function clean(v) { return unesc(text(v)).replace(/\s+/g, ' ').trim(); }
+  function low(v) { return clean(v).toLowerCase(); }
+  function esc(s) { return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function num(v) { var n = parseFloat(text(v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : 0; }
+  function round2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
+  function commas(s) { return s.replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function qty(n) { var s = round2(n).toFixed(2).replace(/\.?0+$/, ''), p = s.split('.'); return commas(p[0]) + (p[1] ? '.' + p[1] : ''); }
+  function money(n) { var neg = n < 0, p = round2(Math.abs(n)).toFixed(2).split('.'); return (neg ? '-' : '') + '$' + commas(p[0]) + '.' + p[1]; }
+  function usDate(iso) { var m = text(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? m[2] + '/' + m[3] + '/' + m[1] : text(iso); }
+  function parseMaybeJson(v) { if (typeof v !== 'string') return v; try { return JSON.parse(v); } catch (e) { return v; } }
+
+  /* ---------- the ticket list (written into this field's settings by the Sales Tracker) ---------- */
+  function decodeList(s) {
+    var count = parseInt(text(s.tn), 10), parts = [];
+    for (var i = 0; i < 12 && (!(count >= 0) || i < count); i++) { var p = text(s['t' + i]).replace(/\s+/g, ''); if (!p) break; parts.push(p); }
+    var b64 = parts.join('');
+    if (!b64) return null;
+    b64 = b64.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    var bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (var j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+    var json = window.TextDecoder ? new TextDecoder('utf-8').decode(bytes) : decodeURIComponent(escape(bin));
+    return JSON.parse(json);
+  }
+  function readSettings() {
+    var s;
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    cfg.repEmailField = clean(s.repEmailField) || '15';
+    cfg.repNameField = clean(s.repNameField) || '62';
+    try { state.data = decodeList(s); state.dataError = state.data ? '' : 'empty'; }
+    catch (e) { state.data = null; state.dataError = 'unreadable'; }
+  }
+
+  /* ---------- who is signed in (the two fields single sign-on fills in) ---------- */
+  function nameFrom(v) {
+    v = parseMaybeJson(v);
+    if (v && typeof v === 'object') return clean([v.first, v.middle, v.last].filter(Boolean).join(' '));
+    return clean(v);
+  }
+  function readWho(done) {
+    try {
+      W.getFieldsValueById([cfg.repEmailField, cfg.repNameField], function (res) {
+        var list = (res && res.data) || [];
+        list.forEach(function (f) {
+          var id = text(f.selector || f.id).replace(/\D/g, '');
+          if (id === cfg.repEmailField && clean(f.value)) state.email = low(f.value);
+          if (id === cfg.repNameField && nameFrom(f.value)) state.name = nameFrom(f.value);
+        });
+        if (done) done();
+      });
+    } catch (e) { if (done) done(); }
+  }
+  function isAdmin() { return !!state.data && (state.data.admins || []).map(low).indexOf(low(state.name)) !== -1; }
+  function myTickets() {
+    if (!state.data) return [];
+    // the tracker lists them oldest delivery first - show the newest first
+    var all = (state.data.tickets || []).slice().reverse(), admin = isAdmin(), me = low(state.name), mail = state.email;
+    return all.filter(function (t) { return admin || (mail && low(t.e) === mail) || (me && low(t.by) === me); });
+  }
+  function can(t) {
+    var done = t.s === 'Completed', credit = !!t.cr;
+    return { change: !done, cancel: !done, credit: !credit && (done || isAdmin()) };
+  }
+
+  /* ---------- screens ---------- */
+  function pill(t) {
+    if (t.cr) return '<span class="pill credit">Credit</span>';
+    return t.s === 'Completed' ? '<span class="pill done">Completed</span>' : '<span class="pill active">' + esc(t.s || 'Active') + '</span>';
+  }
+  function listScreen() {
+    if (!state.email && !state.name) {
+      return '<div class="card"><div class="pad muted">Waiting for your sign-in… If this stays here, close the form and open it again from the NoisiV app.</div></div>';
+    }
+    if (!state.data) {
+      return '<div class="card"><div class="pad muted">' + (state.dataError === 'unreadable'
+        ? 'The ticket list could not be read. Tell Mark.' : 'The ticket list has not been loaded yet. Try again in a few minutes.') + '</div></div>';
+    }
+    var mine = myTickets(), q = low(state.search);
+    var shown = mine.filter(function (t) { return !q || low(t.t + ' ' + t.c + ' ' + t.by).indexOf(q) !== -1; });
+    var open = shown.filter(function (t) { return t.s !== 'Completed'; });
+    var done = shown.filter(function (t) { return t.s === 'Completed'; });
+    var admin = isAdmin();
+    function rows(list) {
+      return list.map(function (t) {
+        return '<button type="button" class="row" data-open="' + esc(t.t) + '"><span class="main"><span class="tk">' + esc(t.t) + ' ' + pill(t) + '</span>' +
+          '<span class="sub">' + esc(t.c) + ' · ' + esc(t.dt) + (admin ? ' · ' + esc(t.by) : '') + '</span></span>' +
+          '<span class="amt"><b>' + money(num(t.a)) + '</b>' + qty(num(t.g)) + ' qty</span><span class="go">›</span></button>';
+      }).join('');
+    }
+    var h = '<input class="search" type="text" id="search" placeholder="Search ticket # or customer" value="' + esc(state.search) + '">';
+    h += '<div class="card"><div class="bar">Active tickets <small>change, cancel' + (admin ? ' or credit' : '') + '</small></div>' +
+      (open.length ? rows(open) : '<div class="pad muted">' + (q ? 'No active ticket matches.' : 'You have no active tickets.') + '</div>') + '</div>';
+    h += '<div class="card"><div class="bar">Completed tickets <small>credit back only</small></div>' +
+      (done.length ? rows(done) : '<div class="pad muted">' + (q ? 'No completed ticket matches.' : 'No completed tickets in the last 60 days.') + '</div>') + '</div>';
+    h += '<div class="muted">Signed in as ' + esc(state.name || state.email) + (admin ? ' (you see every rep’s tickets)' : '') + '.</div>';
+    return h;
+  }
+  function linesTable(t) {
+    var done = t.s === 'Completed', total = 0, any = false;
+    var body = (t.L || []).map(function (l) {
+      var price = typeof l[5] === 'number' ? l[5] : null, sales = price === null ? null : round2(price * num(l[2]));
+      if (sales !== null) { total += sales; any = true; }
+      return '<tr><td>' + esc(l[0]) + '</td><td>' + esc(l[1]) + '</td><td class="n">' + qty(num(l[2])) + '</td><td class="hide-s">' + esc(usDate(l[3])) + '</td>' +
+        (done ? '<td class="n">' + (num(l[6]) ? qty(num(l[6])) : '–') + '</td>' : '') +
+        '<td class="n">' + (sales === null ? '–' : money(sales)) + '</td></tr>';
+    }).join('');
+    return '<table><thead><tr><th>Cost center</th><th>Product</th><th class="n">Qty</th><th class="hide-s">Delivered</th>' + (done ? '<th class="n">Credited</th>' : '') +
+      '<th class="n">Sales</th></tr></thead><tbody>' + body +
+      (any ? '<tr class="total"><td colspan="2">Ticket total</td><td class="n">' + qty(num(t.g)) + '</td><td class="hide-s"></td>' + (done ? '<td></td>' : '') + '<td class="n">' + money(num(t.a)) + '</td></tr>' : '') +
+      '</tbody></table>';
+  }
+  function head(t) {
+    return '<div class="card"><div class="bar">Ticket ' + esc(t.t) + ' ' + pill(t) + '</div><div class="pad"><div class="facts">' +
+      '<div><span>Customer</span><b>' + esc(t.c) + '</b></div><div><span>District</span><b>' + esc(t.d) + '</b></div>' +
+      '<div><span>Delivered</span><b>' + esc(t.dt) + '</b></div><div><span>Sales rep</span><b>' + esc(t.by) + '</b></div></div>' +
+      (t.cr ? '<div class="muted" style="margin-top:10px">This is a credit for ticket ' + esc(t.cr) + '.</div>' : '') + '</div></div>';
+  }
+  function ticketScreen() {
+    var t = state.ticket, c = can(t), b = '';
+    if (c.change) b += '<button type="button" class="btn primary" data-act="change">Change lines</button>';
+    if (c.cancel) b += '<button type="button" class="btn danger" data-act="cancel">Cancel ticket</button>';
+    if (c.credit) b += '<button type="button" class="btn amber" data-act="credit">Credit back</button>';
+    return '<div class="btns" style="margin-bottom:12px"><button type="button" class="btn quiet" data-back="list">‹ All tickets</button></div>' + head(t) +
+      '<div class="card"><div class="bar">Lines on this ticket</div>' + linesTable(t) + '</div>' +
+      '<div class="card"><div class="bar">What do you want to do?</div><div class="pad"><div class="btns">' + b + '</div>' +
+      (t.s === 'Completed' ? '<div class="muted" style="margin-top:10px">The office has invoiced this ticket, so it can only be credited back.</div>' : '') + '</div></div>';
+  }
+  var PREVIEW = '<div class="note"><b>Preview.</b> This screen is here so you can see how it will work. Nothing is saved yet.</div>';
+  function backBar(t) { return '<div class="btns" style="margin-bottom:12px"><button type="button" class="btn quiet" data-back="ticket">‹ Ticket ' + esc(t.t) + '</button></div>'; }
+  function changeScreen() {
+    var t = state.ticket, e = state.edit;
+    var lines = e.lines.map(function (l, i) {
+      return '<div class="line' + (l.remove ? ' off' : '') + '"><h4><span>Line ' + (i + 1) + ' <small>' + esc(l.cc) + ' · ' + esc(l.product) + '</small></span>' +
+        '<label class="check"><input type="checkbox" data-remove="' + i + '"' + (l.remove ? ' checked' : '') + '> Remove this line</label></h4>' +
+        '<div class="fields"><div><label>Qty delivered</label><input type="number" inputmode="decimal" step="any" min="0" data-f="qty" data-i="' + i + '" value="' + esc(l.qty) + '"' + (l.remove ? ' disabled' : '') + '></div>' +
+        '<div><label>Delivery date</label><input type="date" data-f="date" data-i="' + i + '" value="' + esc(l.date) + '"' + (l.remove ? ' disabled' : '') + '></div>' +
+        '<div class="wide"><label>Comments</label><input type="text" data-f="comments" data-i="' + i + '" value="' + esc(l.comments) + '"' + (l.remove ? ' disabled' : '') + '></div></div></div>';
+    }).join('');
+    return backBar(t) + PREVIEW + head(t) + '<div class="card"><div class="bar">Change lines <small>fix one, several or all</small></div>' + lines + '</div>' +
+      '<div class="card"><div class="pad"><span class="lbl">Why is it changing?</span><textarea data-f="reason" placeholder="For example: wrong quantity on line 2">' + esc(e.reason) + '</textarea>' +
+      '<div class="muted" style="margin-top:8px">Changing the cost center or product, and adding a line, come with the next stage.</div></div></div>';
+  }
+  function cancelScreen() {
+    var t = state.ticket, e = state.edit;
+    return backBar(t) + PREVIEW + head(t) + '<div class="card"><div class="bar">Cancel this ticket</div><div class="pad">' +
+      '<div class="muted" style="margin-bottom:10px">The whole ticket (' + qty(num(t.g)) + ' qty, ' + money(num(t.a)) + ') comes off the Sales Tracker. It can’t be brought back; a new ticket would have to be written.</div>' +
+      '<span class="lbl">Why is it being cancelled?</span><textarea data-f="reason" placeholder="For example: entered twice">' + esc(e.reason) + '</textarea></div></div>';
+  }
+  function creditScreen() {
+    var t = state.ticket, e = state.edit, total = 0;
+    var lines = e.lines.map(function (l, i) {
+      var amt = l.price === null ? 0 : round2(l.price * num(l.credit));
+      total += amt;
+      return '<div class="line"><h4><span>Line ' + (i + 1) + ' <small>' + esc(l.cc) + ' · ' + esc(l.product) + '</small></span><small>' +
+        (l.left > 0 ? qty(l.left) + ' left to credit' : 'fully credited') + '</small></h4>' +
+        '<div class="fields"><div><label>Delivered</label><input type="text" value="' + qty(l.qty) + (l.credited ? '  (' + qty(l.credited) + ' already credited)' : '') + '" disabled></div>' +
+        '<div><label>Credit back (qty)</label><input type="number" inputmode="decimal" step="any" min="0" max="' + l.left + '" data-f="credit" data-i="' + i + '" value="' + esc(l.credit) + '"' + (l.left > 0 ? '' : ' disabled') + '>' +
+        (num(l.credit) > l.left ? '<div class="err">More than what is left (' + qty(l.left) + ').</div>' : '') + '</div></div></div>';
+    }).join('');
+    return backBar(t) + PREVIEW + head(t) + '<div class="card"><div class="bar">Credit back <small>all, or only some lines</small></div>' + lines +
+      '<div class="line"><div class="btns"><button type="button" class="btn quiet" data-all="1">Credit everything that is left</button>' +
+      '<button type="button" class="btn quiet" data-all="0">Clear</button></div></div>' +
+      '<table><tbody><tr class="total"><td>Credit total</td><td class="n" id="credTotal">' + money(-total) + '</td></tr></tbody></table></div>' +
+      '<div class="card"><div class="pad"><span class="lbl">Why is it being credited?</span><textarea data-f="reason" placeholder="For example: product returned">' + esc(e.reason) + '</textarea>' +
+      '<div class="muted" style="margin-top:8px">The credit becomes a ticket of its own. Ticket ' + esc(t.t) + ' stays as it is.</div></div></div>';
+  }
+
+  /* ---------- drawing ---------- */
+  var lastHeight = 0;
+  function fit() {
+    var h = Math.max(120, Math.ceil(el.getBoundingClientRect().height) + 6);
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+  function draw(keepFocus) {
+    var active = keepFocus && document.activeElement, key = active && active.getAttribute ? [active.getAttribute('data-f'), active.getAttribute('data-i'), active.id] : null;
+    var pos = active && active.selectionStart;
+    var h;
+    if (state.view === 'ticket' && state.ticket) h = ticketScreen();
+    else if (state.view === 'action' && state.ticket && state.action === 'change') h = changeScreen();
+    else if (state.view === 'action' && state.ticket && state.action === 'cancel') h = cancelScreen();
+    else if (state.view === 'action' && state.ticket && state.action === 'credit') h = creditScreen();
+    else h = listScreen();
+    el.innerHTML = h;
+    if (key) {
+      var sel = key[2] ? '#' + key[2] : '[data-f="' + key[0] + '"]' + (key[1] !== null ? '[data-i="' + key[1] + '"]' : '');
+      var again = el.querySelector(sel);
+      if (again) { again.focus(); try { if (typeof pos === 'number') again.setSelectionRange(pos, pos); } catch (e) {} }
+    }
+    fit();
+    setTimeout(fit, 150);
+  }
+  function startAction(act) {
+    var t = state.ticket;
+    state.action = act;
+    state.edit = { reason: '', lines: (t.L || []).map(function (l) {
+      var q = num(l[2]), credited = num(l[6]);
+      return { cc: l[0], product: l[1], qty: q, date: text(l[3]).slice(0, 10), comments: text(l[4]), price: typeof l[5] === 'number' ? l[5] : null,
+               credited: credited, left: round2(Math.max(0, q - credited)), credit: '', remove: false };
+    }) };
+    state.view = 'action';
+    draw();
+    try { window.scrollTo(0, 0); } catch (e) {}
+  }
+
+  el.addEventListener('click', function (ev) {
+    var b = ev.target.closest ? ev.target.closest('[data-open],[data-back],[data-act],[data-all]') : null;
+    if (!b) return;
+    if (b.hasAttribute('data-open')) {
+      var id = b.getAttribute('data-open');
+      state.ticket = myTickets().filter(function (t) { return t.t === id; })[0] || null;
+      state.view = state.ticket ? 'ticket' : 'list';
+      draw();
+    } else if (b.hasAttribute('data-back')) {
+      state.view = b.getAttribute('data-back') === 'ticket' ? 'ticket' : 'list';
+      if (state.view === 'list') state.ticket = null;
+      draw();
+    } else if (b.hasAttribute('data-act')) {
+      startAction(b.getAttribute('data-act'));
+    } else if (b.hasAttribute('data-all')) {
+      var all = b.getAttribute('data-all') === '1';
+      state.edit.lines.forEach(function (l) { l.credit = all && l.left > 0 ? String(l.left) : ''; });
+      draw();
+    }
+  });
+  el.addEventListener('input', function (ev) {
+    var t = ev.target;
+    if (t.id === 'search') { state.search = t.value; draw(true); return; }
+    var f = t.getAttribute('data-f'), i = t.getAttribute('data-i');
+    if (!f || !state.edit) return;
+    if (f === 'reason') { state.edit.reason = t.value; return; }
+    var l = state.edit.lines[+i];
+    if (!l) return;
+    if (f === 'qty') l.qty = t.value;
+    else if (f === 'date') l.date = t.value;
+    else if (f === 'comments') l.comments = t.value;
+    else if (f === 'credit') { l.credit = t.value; draw(true); }
+  });
+  el.addEventListener('change', function (ev) {
+    var t = ev.target;
+    if (t.hasAttribute && t.hasAttribute('data-remove') && state.edit) {
+      state.edit.lines[+t.getAttribute('data-remove')].remove = t.checked;
+      draw();
+    }
+  });
+
+  /* ---------- start ---------- */
+  function boot() {
+    readSettings();
+    draw();
+    var tries = 0;
+    (function again() {
+      readWho(function () {
+        draw(true);
+        if (!state.email && !state.name && tries++ < 20) setTimeout(again, 700);   // single sign-on fills the fields a moment after the page opens
+      });
+    })();
+    ['input_' + cfg.repEmailField, 'first_' + cfg.repNameField, 'last_' + cfg.repNameField].forEach(function (id) {
+      try { W.listenFromField(id, 'change', function () { readWho(function () { draw(true); }); }); } catch (e) {}
+    });
+  }
+  W.subscribe('ready', boot);
+  W.subscribe('submit', function () {
+    // Stage 1: this form is a preview and never saves anything.
+    try { W.sendSubmit({ valid: true, value: '' }); } catch (e) {}
+  });
+  window.addEventListener('resize', fit);
+
+  // Opened on its own (not inside Jotform): show sample tickets so the layout can be checked.
+  if (window.self === window.top) {
+    state.name = 'Mark Main'; state.email = 'mmain@vanta-chem.com';
+    state.data = { admins: ['mark main'], tickets: [
+      { t: 'VC0000115', s: 'Active', c: 'EMEP II OPERATING, LLC', d: '700-WY', by: 'Ben Morse', e: 'bmorse@vanta-chem.com', dt: '11/20/2026', g: 1, a: 30, cr: '',
+        L: [['Stop', 'STOP CHARGE', 1, '2026-11-20', '', 30, 0]] },
+      { t: 'VC0000058', s: 'Active', c: 'Boaz', d: '100-WTX', by: 'Keeler Dunavin', e: 'kdunavin@vanta-chem.com', dt: '10/09/2026, 10/21/2026, 10/30/2026', g: 571, a: 8882.5, cr: '',
+        L: [['Boaz 1', 'VC-SCW192', 271, '2026-10-09', '', 16.5, 0], ['Boaz 2', 'VC-PSO700X', 300, '2026-10-21', 'second drop', 15, 0]] },
+      { t: 'VC0000116', s: 'Completed', c: 'Barn Owls', d: '700-WY', by: 'Ben Morse', e: 'bmorse@vanta-chem.com', dt: '11/23/2026', g: 205, a: 4100.25, cr: '',
+        L: [['Owl 4', 'VC-PDO734', 110, '2026-11-23', '', 20.25, 55], ['Owl 7', 'VC-CIW239', 95, '2026-11-23', '', 14.4, 0]] }
+    ] };
+    draw();
+  }
+})();
+</script>
+</body>
+</html>
