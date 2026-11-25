@@ -229,7 +229,7 @@
        - incomplete:  the lines first (so the totals stay current), then "not valid" with what is missing.
                       The form shows that sentence under the block when the rep presses Review.
        - empty:       an empty answer; the form's own "required" check covers it. */
-  var lastSent = null, pubTimer = null;
+  var lastSent = null, pubTimer = null, lastMiss = '';
   function currentValue() { return isBlank() ? '' : JSON.stringify(rows()); }
   function whatIsMissing() {
     var p = problems();
@@ -245,6 +245,9 @@
         else if (!miss) W.sendData({ valid: true, value: v });
         else { W.sendData({ value: v }); W.sendData({ valid: false, value: v, error: { msg: miss } }); }
       } catch (e) {}
+      // a "what is missing" sentence the form may still be showing under the block is out of date now
+      if (lastMiss && lastMiss !== miss) { try { W.hideWidgetError(); } catch (e) {} }
+      lastMiss = miss;
     }
     return v;
   }
@@ -583,6 +586,7 @@
       state.tried = true;
       draw();
       try { W.sendSubmit(miss ? { valid: false, value: v, error: { msg: miss } } : { valid: false, value: '' }); } catch (e) {}
+      lastMiss = miss;
       // the form empties this field when it is told "not ready"; hand the lines back so the totals stay on screen
       if (v) setTimeout(function () { lastSent = null; publish(); }, 600);
       return;
