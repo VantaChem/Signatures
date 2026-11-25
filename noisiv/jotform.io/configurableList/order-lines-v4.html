@@ -84,6 +84,8 @@
   .status { border: 1px solid #b42318; background: #fff1ef; color: #7a1a12; border-radius: 6px; padding: 10px 12px; margin: 0 0 12px 0; font-size: 13px; }
   .status ul { margin: 6px 0 0 0; padding-left: 18px; }
   .status li { margin: 2px 0; }
+  .hint { font-size: 12.5px; line-height: 1.35; color: #8a5200; margin-top: 8px; }
+  .hint:empty { display: none; }
   .note { background: #fff; border: 1px solid #c9ccc6; border-radius: 6px; padding: 10px 12px; color: #6b6e6c; font-size: 13px; }
   @media (max-width: 480px) {
     .fields > div, .fields > div.fp { flex: 1 0 100%; }
@@ -197,25 +199,35 @@
     });
   }
   function isBlank() { return kept().length === 0; }
-  // every problem, as { l: location, j: product (or -1), f: field, msg }
+  // every problem, as { l: location, j: product (or -1), f: field, msg, kind: 'need' | 'fix', short }
   function problems() {
     var out = [], many = state.locs.length > 1, seenLoc = {};
     kept().forEach(function (k) {
       var l = k.l, j = k.j, loc = k.loc, ln = k.ln;
       if (!seenLoc[l]) {
         seenLoc[l] = true;
-        if (!clean(loc.cc)) out.push({ l: l, j: -1, f: 'cc', msg: (many ? 'Location ' + (l + 1) : 'The location') + ': pick the ' + cfg.cc.toLowerCase() + '.' });
+        if (!clean(loc.cc)) out.push({ l: l, j: -1, f: 'cc', kind: 'need', short: cfg.cc.toLowerCase(), msg: (many ? 'Location ' + (l + 1) : 'The location') + ': pick the ' + cfg.cc.toLowerCase() + '.' });
       }
       var w = (many ? 'Location ' + (l + 1) : '') + (loc.lines.length > 1 ? (many ? ', product ' : 'Product ') + (j + 1) : '');
       w = w ? w + ': ' : '';
       var say = function (m) { return w ? w + m : m.charAt(0).toUpperCase() + m.slice(1); };
-      if (!clean(ln.product)) out.push({ l: l, j: j, f: 'product', msg: say('pick the ' + cfg.product.toLowerCase() + '.') });
-      if (!clean(ln.qty)) out.push({ l: l, j: j, f: 'qty', msg: say('enter the quantity.') });
-      else if (!qtyOk(ln.qty)) out.push({ l: l, j: j, f: 'qty', msg: say('the quantity must be a number above 0' + (parseFloat(ln.qty) > MAX_QTY ? ' and no more than ' + MAX_QTY.toLocaleString('en-US') : '') + '.') });
-      if (!ln.date) out.push({ l: l, j: j, f: 'date', msg: say('pick the ' + cfg.date.toLowerCase() + '.') });
-      else if (!dateOk(ln.date)) out.push({ l: l, j: j, f: 'date', msg: say('check the ' + cfg.date.toLowerCase() + ' - the year looks wrong.') });
+      var add = function (f, kind, short, m) { out.push({ l: l, j: j, f: f, kind: kind, short: short, msg: say(m) }); };
+      if (!clean(ln.product)) add('product', 'need', cfg.product.toLowerCase(), 'pick the ' + cfg.product.toLowerCase() + '.');
+      if (!clean(ln.qty)) add('qty', 'need', 'quantity', 'enter the quantity.');
+      else if (!qtyOk(ln.qty)) add('qty', 'fix', 'the quantity must be a number above 0' + (parseFloat(ln.qty) > MAX_QTY ? ' and no more than ' + MAX_QTY.toLocaleString('en-US') : ''),
+        'the quantity must be a number above 0' + (parseFloat(ln.qty) > MAX_QTY ? ' and no more than ' + MAX_QTY.toLocaleString('en-US') : '') + '.');
+      if (!ln.date) add('date', 'need', cfg.date.toLowerCase(), 'pick the ' + cfg.date.toLowerCase() + '.');
+      else if (!dateOk(ln.date)) add('date', 'fix', 'the year of the ' + cfg.date.toLowerCase() + ' looks wrong', 'check the ' + cfg.date.toLowerCase() + ' - the year looks wrong.');
     });
     return out;
+  }
+  // "Still needed: quantity, delivery date" under a product (j) or under the cost center box (j = -1)
+  function hintText(all, l, j) {
+    var need = [], fix = [];
+    all.forEach(function (p) { if (p.l === l && p.j === j) (p.kind === 'need' ? need : fix).push(p.short); });
+    var t = need.length ? 'Still needed: ' + need.join(', ') + '.' : '';
+    if (fix.length) t += (t ? ' ' : '') + 'Check: ' + fix.join('; ') + '.';
+    return t;
   }
   function dateOk(iso) {
     if (!realDate(iso)) return false;
@@ -232,9 +244,7 @@
   var lastSent = null, pubTimer = null, lastMiss = '';
   function currentValue() { return isBlank() ? '' : JSON.stringify(rows()); }
   function whatIsMissing() {
-    var p = problems();
-    if (!p.length) return '';
-    return p[0].msg + (p.length > 1 ? ' (and ' + (p.length - 1) + ' more to finish)' : '');
+    return problems().length ? 'The order lines are not finished. What is still needed is shown under each product.' : '';
   }
   function publish() {
     var v = currentValue(), miss = v ? whatIsMissing() : '', key = v + '\n' + miss;
@@ -245,8 +255,8 @@
         else if (!miss) W.sendData({ valid: true, value: v });
         else { W.sendData({ value: v }); W.sendData({ valid: false, value: v, error: { msg: miss } }); }
       } catch (e) {}
-      // a "what is missing" sentence the form may still be showing under the block is out of date now
-      if (lastMiss && lastMiss !== miss) { try { W.hideWidgetError(); } catch (e) {} }
+      // finished (or emptied): take down the "not finished" sentence the form may be showing under the block
+      if (lastMiss && !miss) { try { W.hideWidgetError(); } catch (e) {} }
       lastMiss = miss;
     }
     return v;
@@ -275,7 +285,7 @@
     });
     return set;
   }
-  function lineHtml(loc, l, ln, j, bad) {
+  function lineHtml(loc, l, ln, j, bad, all) {
     var b = function (f) { return bad[l + '|' + j + '|' + f] ? ' class="bad"' : ''; };
     var many = loc.lines.length > 1;
     return '<div class="line' + (j === 0 ? ' first' : '') + '" data-l="' + l + '" data-j="' + j + '">' +
@@ -285,9 +295,9 @@
         '<div class="fq"><label>' + esc(cfg.qty) + ' <span class="req">*</span></label><input type="number" inputmode="decimal" step="any" min="0" data-f="qty" placeholder="' + esc(cfg.qtyHint) + '" value="' + esc(ln.qty) + '"' + b('qty') + '></div>' +
         '<div class="fd"><label>' + esc(cfg.date) + ' <span class="req">*</span></label><input type="date" data-f="date" value="' + esc(ln.date) + '"' + b('date') + '></div>' +
         '<div class="fc"><label>' + esc(cfg.comments) + '</label><input type="text" data-f="comments" placeholder="' + esc(cfg.commentsHint) + '" value="' + esc(ln.comments) + '" autocomplete="off"></div>' +
-      '</div></div>';
+      '</div><div class="hint" data-hint="' + l + '|' + j + '">' + esc(hintText(all, l, j)) + '</div></div>';
   }
-  function locHtml(loc, l, bad) {
+  function locHtml(loc, l, bad, all) {
     var many = state.locs.length > 1;
     return '<div class="loc" data-l="' + l + '">' +
       '<div class="bar"><span class="nm">Location' + (many ? ' ' + (l + 1) : '') + '<small id="nm' + l + '">' + (clean(loc.cc) ? ' &middot; ' + esc(loc.cc) : '') + '</small></span>' +
@@ -298,7 +308,8 @@
           'autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done" role="combobox" aria-expanded="false" aria-controls="list' + l + '">' +
           '<span class="chev" data-chev="' + l + '" aria-hidden="true">&#9660;</span>' +
           '<div class="list" id="list' + l + '" role="listbox" hidden></div></div>' +
-        loc.lines.map(function (ln, j) { return lineHtml(loc, l, ln, j, bad); }).join('') +
+        '<div class="hint" data-hint="' + l + '|-1">' + esc(hintText(all, l, -1)) + '</div>' +
+        loc.lines.map(function (ln, j) { return lineHtml(loc, l, ln, j, bad, all); }).join('') +
         '<button type="button" class="add addline" data-addline="' + l + '">+ Add product to this location</button>' +
       '</div></div>';
   }
@@ -316,9 +327,9 @@
       return;
     }
     state.open = -1;
-    var bad = badSet();
+    var bad = badSet(), all = problems();
     el.innerHTML = '<div id="statusBox">' + statusHtml() + '</div>' +
-      state.locs.map(function (loc, l) { return locHtml(loc, l, bad); }).join('') +
+      state.locs.map(function (loc, l) { return locHtml(loc, l, bad, all); }).join('') +
       '<button type="button" class="add" data-addloc="1">+ Add another location</button>';
     fit();
   }
@@ -332,6 +343,11 @@
       var key = n.hasAttribute('data-cc') ? loc.getAttribute('data-l') + '|-1|cc' : line.getAttribute('data-l') + '|' + line.getAttribute('data-j') + '|' + n.getAttribute('data-f');
       if (n.getAttribute('data-f') === 'comments') return;
       n.classList.toggle('bad', !!bad[key]);
+    });
+    var all = problems();
+    [].forEach.call(el.querySelectorAll('[data-hint]'), function (n) {
+      var k = n.getAttribute('data-hint').split('|'), t = hintText(all, +k[0], +k[1]);
+      if (n.textContent !== t) n.textContent = t;
     });
     fit();
   }
