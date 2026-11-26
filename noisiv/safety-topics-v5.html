@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>My safety topics</title>
 <!--
-  NoisiV - "My safety topics" (v3)
+  NoisiV - "My safety topics" (v5)
   A small page shown inside the Safety Sign-off form. It reads who is signed in from the two fields
   single sign-on fills in, asks the Safety Sign-offs script what that person still has to sign and what
   they have signed, and shows both lists. People on the Safety team also get a "Post a safety topic" button.
@@ -45,6 +45,10 @@
   td.d { white-space: nowrap; text-align: right; padding-left: 8px; }
   .tick { color: #15803d; font-weight: 700; }
   .empty { color: #555; }
+  .home { display: inline-block; color: #1f2937 !important; text-decoration: none; font-weight: 600; font-size: 14px; border: 1px solid #c9ced6; border-radius: 999px; padding: 6px 14px; margin: 0 0 12px; background: #fff; }
+  .rmsg { font-size: 13px; margin-top: 8px; color: #166534; min-height: 16px; }
+  .rmsg.bad { color: #b91c1c; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; }
   .test { background: #fef3c7; border: 1px solid #f59e0b; padding: 6px 10px; border-radius: 6px; font-size: 13px; margin: 0 0 10px; }
 </style>
 </head>
@@ -73,6 +77,7 @@
     cfg.statusKey = clean(s.statusKey);
     cfg.postUrl = safeUrl(s.postUrl);
     cfg.flagField = digits(s.flagField);
+    cfg.homeUrl = safeUrl(s.homeUrl);
   }
 
   function resize() {
@@ -105,8 +110,9 @@
 
   function render() {
     var d = state.data, html = '';
-    if (state.error) { show('<div class="empty">' + esc(state.error) + '</div>'); flag('error'); return; }
+    if (state.error) { show((cfg.homeUrl ? '<a class="home" href="' + esc(cfg.homeUrl) + '" target="_top">&#8592; NoisiV Home</a><br>' : '') + '<div class="empty">' + esc(state.error) + '</div>'); flag('error'); return; }
     if (!d) { show('<div class="empty">Loading your safety topics&hellip;</div>'); return; }
+    if (cfg.homeUrl) html += '<a class="home" href="' + esc(cfg.homeUrl) + '" target="_top">&#8592; NoisiV Home</a><br>';
     if (d.test) html += '<div class="test">TEST MODE - only the test people have topics to sign.</div>';
     if (d.due.length) {
       html += '<div class="sec todo"><div class="hd"><span>NEEDS YOUR SIGNATURE</span><span class="pill">' + d.due.length + '</span></div><div class="bd">';
@@ -129,13 +135,22 @@
       }).join('') + '</table></div></div>';
     }
     if (d.team && cfg.postUrl) {
-      html += '<div class="sec team"><div class="hd"><span>Safety team</span></div><div class="bd"><a class="btn light" href="' + esc(cfg.postUrl) + '" target="_blank" rel="noopener">Post a safety topic</a>' +
+      html += '<div class="sec team"><div class="hd"><span>Safety team</span></div><div class="bd"><div class="btns"><a class="btn light" href="' + esc(cfg.postUrl) + '" target="_blank" rel="noopener">Post a safety topic</a>' +
+        '<button class="btn light" id="report" type="button">Email me who hasn\'t signed</button></div><div class="rmsg" id="rmsg"></div>' +
         (d.open && d.open.length ? '<table style="margin-top:10px;">' + d.open.map(function (o) {
           return '<tr><td>' + esc(o.title) + '<div class="s">sign by ' + esc(o.due) + '</div></td><td class="d">' + esc(o.done) + ' of ' + esc(o.of) + ' signed</td></tr>';
         }).join('') + '</table>' : '') + '</div></div>';
     }
     flag(d.due.length ? 'yes' : '');
     show(html);
+    var rb = document.getElementById('report'), rm = document.getElementById('rmsg');
+    if (rb) rb.addEventListener('click', function () {
+      rb.disabled = true; rm.className = 'rmsg'; rm.textContent = 'Sending the report...'; resize();
+      var url = cfg.statusUrl + (cfg.statusUrl.indexOf('?') < 0 ? '?' : '&') + 'view=safety&report=1&e=' + encodeURIComponent(state.email) + '&k=' + encodeURIComponent(cfg.statusKey);
+      fetch(url, { method: 'GET', redirect: 'follow' }).then(function (r) { return r.json(); }).then(function (o) {
+        rm.className = 'rmsg' + (o && o.ok ? '' : ' bad'); rm.textContent = (o && o.msg) || (o && o.ok ? 'Report sent. Check your email.' : 'The report could not be sent.'); rb.disabled = false; resize();
+      }).catch(function () { rm.className = 'rmsg bad'; rm.textContent = 'The report could not be sent. Please try again.'; rb.disabled = false; resize(); });
+    });
     // opening a topic also picks it on the form, so a typed read code is checked against the right one
     Array.prototype.forEach.call(wrap.querySelectorAll('a[data-i]'), function (a) {
       a.addEventListener('click', function () {
