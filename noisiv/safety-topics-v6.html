@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My safety topics</title>
+<!--
+  NoisiV - "My safety topics" (v5)
+  A small page shown inside the Safety Sign-off form. It reads who is signed in from the two fields
+  single sign-on fills in, asks the Safety Sign-offs script what that person still has to sign and what
+  they have signed, and shows both lists. People on the Safety team also get a "Post a safety topic" button.
+
+  Settings (set on the widget by the Safety script, not by hand):
+    emailField, nameField, topicField  - question numbers on the form
+    statusUrl, statusKey               - where to ask, and the key the script expects
+    postUrl                            - the "Post a Safety Topic" form
+    flagField                          - hidden question: filled when this person has something to sign (the form shows its topic / read-code boxes only then)
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Inter, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 15px; color: #1f2937; }
+  #wrap { padding: 1px 1px 2px; }
+  .sec { border-radius: 10px; margin: 0 0 14px; overflow: hidden; border: 1px solid #d5d9df; }
+  .sec > .hd { padding: 10px 14px; font-weight: 700; font-size: 15px; letter-spacing: .2px; display: flex; justify-content: space-between; align-items: center; }
+  .sec > .bd { padding: 12px 14px; background: #fff; }
+  .sec.todo { border: 2px solid #c2410c; }
+  .sec.todo > .hd { background: #c2410c; color: #fff; }
+  .sec.clear { border: 1px solid #86c79b; }
+  .sec.clear > .hd { background: #e7f6ec; color: #166534; }
+  .sec.done > .hd { background: #eef0f3; color: #4b5563; font-weight: 600; }
+  .sec.team > .hd { background: #eef0f3; color: #4b5563; font-weight: 600; }
+  .pill { background: #fff; color: #c2410c; border-radius: 999px; padding: 1px 10px; font-size: 13px; }
+  .card { padding: 0 0 12px; margin: 0 0 12px; border-bottom: 1px solid #e3e6ea; }
+  .card:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
+  .t { font-weight: 700; font-size: 17px; }
+  .s { color: #555; font-size: 13px; margin: 3px 0 0; }
+  .late { color: #b91c1c; font-weight: 700; }
+  .m { font-size: 14px; margin: 8px 0 0; white-space: pre-wrap; }
+  .btn { display: block; text-align: center; background: #1f2937; color: #fff !important; text-decoration: none; font-weight: 700; padding: 13px 16px; border-radius: 8px; margin-top: 10px; border: 0; font-size: 16px; cursor: pointer; }
+  .btn.light { display: inline-block; background: #fff; color: #1f2937 !important; border: 1px solid #1f2937; font-size: 15px; padding: 10px 16px; margin-top: 0; }
+  .hint { color: #555; font-size: 13px; margin-top: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; color: #4b5563; }
+  td { padding: 6px 0; border-bottom: 1px solid #eef0f3; vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.d { white-space: nowrap; text-align: right; padding-left: 8px; }
+  .tick { color: #15803d; font-weight: 700; }
+  .empty { color: #555; }
+  .home { display: inline-block; color: #1f2937 !important; text-decoration: none; font-weight: 600; font-size: 14px; border: 1px solid #c9ced6; border-radius: 999px; padding: 6px 14px; margin: 0 0 12px; background: #fff; }
+  .rmsg { font-size: 13px; margin-top: 8px; color: #166534; min-height: 16px; }
+  .rmsg.bad { color: #b91c1c; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+  .test { background: #fef3c7; border: 1px solid #f59e0b; padding: 6px 10px; border-radius: 6px; font-size: 13px; margin: 0 0 10px; }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="empty">Loading your safety topics&hellip;</div></div>
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  var W = window.JFCustomWidget, wrap = document.getElementById('wrap');
+  var cfg = {}, state = { email: '', name: '', data: null, error: '', tries: 0 }, lastHeight = 0;
+
+  function text(v) { return v === undefined || v === null ? '' : String(v); }
+  function clean(v) { return text(v).replace(/\s+/g, ' ').trim(); }
+  function esc(s) { return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function digits(v) { return clean(v).replace(/\D/g, ''); }
+  function safeUrl(u) { u = clean(u); return /^https:\/\//i.test(u) ? u : ''; }
+
+  function readSettings() {
+    var s = {};
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    cfg.emailField = digits(s.emailField) || '3';
+    cfg.nameField = digits(s.nameField) || '2';
+    cfg.topicField = digits(s.topicField) || '4';
+    cfg.statusUrl = safeUrl(s.statusUrl);
+    cfg.statusKey = clean(s.statusKey);
+    cfg.postUrl = safeUrl(s.postUrl);
+    cfg.flagField = digits(s.flagField);
+    cfg.homeUrl = safeUrl(s.homeUrl);
+  }
+
+  function resize() {
+    var h = Math.ceil(wrap.getBoundingClientRect().height) + 6;
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+  var lastFlag = null;
+  function flag(v) { if (!cfg.flagField || v === lastFlag) return; lastFlag = v; try { W.setFieldsValueById([{ id: cfg.flagField, value: v }]); } catch (e) {} }
+  function show(html) { if (wrap.innerHTML !== html) wrap.innerHTML = html; resize(); setTimeout(resize, 300); }
+
+  function parseMaybeJson(v) { if (typeof v !== 'string') return v; try { return JSON.parse(v); } catch (e) { return v; } }
+  function nameFrom(v) {
+    v = parseMaybeJson(v);
+    if (v && typeof v === 'object') return clean([v.first, v.middle, v.last].filter(Boolean).join(' '));
+    return clean(v);
+  }
+  function readWho(done) {
+    try {
+      W.getFieldsValueById([cfg.emailField, cfg.nameField], function (res) {
+        var list = (res && res.data) || [];
+        list.forEach(function (f) {
+          var id = digits(f.selector || f.id);
+          if (id === cfg.emailField && clean(f.value)) state.email = clean(f.value).toLowerCase();
+          if (id === cfg.nameField && nameFrom(f.value)) state.name = nameFrom(f.value);
+        });
+        done();
+      });
+    } catch (e) { done(); }
+  }
+
+  function render() {
+    var d = state.data, html = '';
+    if (state.error) { show((cfg.homeUrl ? '<a class="home" href="' + esc(cfg.homeUrl) + '" target="_top">&#8592; NoisiV Home</a><br>' : '') + '<div class="empty">' + esc(state.error) + '</div>'); flag('error'); return; }
+    if (!d) { show('<div class="empty">Loading your safety topics&hellip;</div>'); return; }
+    if (cfg.homeUrl) html += '<a class="home" href="' + esc(cfg.homeUrl) + '" target="_top">&#8592; NoisiV Home</a><br>';
+    if (d.test) html += '<div class="test">TEST MODE - only the test people have topics to sign.</div>';
+    if (d.due.length) {
+      html += '<div class="sec todo"><div class="hd"><span>NEEDS YOUR SIGNATURE</span><span class="pill">' + d.due.length + '</span></div><div class="bd">';
+      d.due.forEach(function (t, i) {
+        var link = safeUrl(t.link);
+        if (link && state.name) link += '&n=' + encodeURIComponent(state.name);
+        html += '<div class="card"><div class="t">' + esc(t.title) + '</div>' +
+          '<div class="s">' + esc(t.id) + ' &middot; posted ' + esc(t.posted) + ' &middot; <span class="' + (t.late ? 'late' : '') + '">' + (t.late ? 'was due ' : 'sign by ') + esc(t.due) + '</span></div>' +
+          (t.message ? '<div class="m">' + esc(t.message) + '</div>' : '') +
+          (link ? '<a class="btn" data-i="' + i + '" href="' + esc(link) + '" target="_blank" rel="noopener">Open and sign</a>' : '') +
+          '<div class="hint">Read it to the end, then sign at the bottom of it.</div></div>';
+      });
+      html += '</div></div>';
+    } else {
+      html += '<div class="sec clear"><div class="hd"><span><span class="tick">&#10003;</span> Nothing to sign. You are all caught up.</span></div></div>';
+    }
+    if (d.signed.length) {
+      html += '<div class="sec done"><div class="hd"><span>Already signed</span><span>' + d.signed.length + '</span></div><div class="bd"><table>' + d.signed.map(function (s) {
+        return '<tr><td><span class="tick">&#10003;</span> ' + esc(s.title) + '</td><td class="d">' + esc(s.at) + '</td></tr>';
+      }).join('') + '</table></div></div>';
+    }
+    if (d.team && cfg.postUrl) {
+      html += '<div class="sec team"><div class="hd"><span>Safety team</span></div><div class="bd"><div class="btns"><a class="btn light" href="' + esc(cfg.postUrl) + '" target="_blank" rel="noopener">Post a safety topic</a>' +
+        '<button class="btn light" id="report" type="button">Run Not Completed Report</button></div><div class="rmsg" id="rmsg"></div>' +
+        (d.open && d.open.length ? '<table style="margin-top:10px;">' + d.open.map(function (o) {
+          return '<tr><td>' + esc(o.title) + '<div class="s">sign by ' + esc(o.due) + '</div></td><td class="d">' + esc(o.done) + ' of ' + esc(o.of) + ' signed</td></tr>';
+        }).join('') + '</table>' : '') + '</div></div>';
+    }
+    flag(d.due.length ? 'yes' : '');
+    show(html);
+    var rb = document.getElementById('report'), rm = document.getElementById('rmsg');
+    if (rb) rb.addEventListener('click', function () {
+      rb.disabled = true; rm.className = 'rmsg'; rm.textContent = 'Sending the report...'; resize();
+      var url = cfg.statusUrl + (cfg.statusUrl.indexOf('?') < 0 ? '?' : '&') + 'view=safety&report=1&e=' + encodeURIComponent(state.email) + '&k=' + encodeURIComponent(cfg.statusKey);
+      fetch(url, { method: 'GET', redirect: 'follow' }).then(function (r) { return r.json(); }).then(function (o) {
+        rm.className = 'rmsg' + (o && o.ok ? '' : ' bad'); rm.textContent = (o && o.msg) || (o && o.ok ? 'Report sent. Check your email.' : 'The report could not be sent.'); rb.disabled = false; resize();
+      }).catch(function () { rm.className = 'rmsg bad'; rm.textContent = 'The report could not be sent. Please try again.'; rb.disabled = false; resize(); });
+    });
+    // opening a topic also picks it on the form, so a typed read code is checked against the right one
+    Array.prototype.forEach.call(wrap.querySelectorAll('a[data-i]'), function (a) {
+      a.addEventListener('click', function () {
+        var t = d.due[parseInt(a.getAttribute('data-i'), 10)];
+        if (t && t.label) { try { W.setFieldsValueById([{ id: cfg.topicField, value: t.label }]); } catch (e) {} }
+      });
+    });
+  }
+
+  function load() {
+    if (!cfg.statusUrl || !cfg.statusKey) { state.error = 'Your list is not set up yet. You can still sign with the box below.'; render(); return; }
+    if (!state.email) {
+      if (++state.tries > 12) { state.error = 'Your login was not found. Close this page and open it again from NoisiV.'; render(); return; }
+      setTimeout(function () { readWho(load); }, 500);
+      return;
+    }
+    var url = cfg.statusUrl + (cfg.statusUrl.indexOf('?') < 0 ? '?' : '&') + 'view=safety&mine=1&e=' + encodeURIComponent(state.email) + '&k=' + encodeURIComponent(cfg.statusKey);
+    fetch(url, { method: 'GET', redirect: 'follow' }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.ok) throw new Error('no');
+      d.due = d.due || []; d.signed = d.signed || [];
+      state.data = d; state.error = ''; render();
+    }).catch(function () {
+      state.error = 'Your list could not be loaded right now. You can still sign with the box below.'; render();
+    });
+  }
+
+  W.subscribe('ready', function () {
+    readSettings();
+    var onBuilder = false;
+    try { onBuilder = !!W.isWidgetOnBuilder(); } catch (e) {}
+    if (onBuilder) { show('<div class="empty">Each person sees their own safety topics here (to sign / signed).</div>'); return; }
+    render();
+    readWho(load);
+  });
+  W.subscribe('submit', function () { try { W.sendSubmit({ valid: true, value: '' }); } catch (e) {} });
+  window.addEventListener('resize', resize);
+})();
+</script>
+</body>
+</html>
