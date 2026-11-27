@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signature admin</title>
+<!--
+  NoisiV - "Signature Admin" (v1)
+  For the people who post documents for signature.  It sits inside a small sign-in-aware form, reads who is signed
+  in, and asks the sign-offs script which lists that person posts to.  For each of those it shows what is still
+  open (how many have signed) and a button that emails that person the "who has not signed" report.  At the top is
+  the one posting form.  Someone who does not post gets a short note and nothing else.
+
+  Settings (on the widget):
+    emailField, nameField   - question numbers on the form
+    statusUrl, statusKey    - where to ask, and the key the script expects (the Safety list's)
+    homeUrl                 - the NoisiV home screen
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Inter, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 15px; color: #1f2937; }
+  #wrap { padding: 1px 1px 2px; }
+  .sec { border-radius: 10px; margin: 0 0 14px; overflow: hidden; border: 1px solid #d5d9df; }
+  .sec > .hd { padding: 10px 14px; font-weight: 700; font-size: 15px; display: flex; justify-content: space-between; align-items: center; background: #eef0f3; color: #374151; }
+  .sec > .bd { padding: 12px 14px; background: #fff; }
+  .pill { background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; border-radius: 999px; padding: 1px 9px; font-size: 12px; font-weight: 600; }
+  .btn { display: block; text-align: center; background: #1f2937; color: #fff !important; text-decoration: none; font-weight: 700; padding: 14px 16px; border-radius: 8px; border: 0; font-size: 17px; cursor: pointer; margin: 0 0 14px; }
+  .btn.light { display: inline-block; background: #fff; color: #1f2937 !important; border: 1px solid #1f2937; font-size: 15px; padding: 10px 16px; margin: 0; }
+  .home { display: inline-block; color: #1f2937 !important; text-decoration: none; font-weight: 600; font-size: 14px; border: 1px solid #c9ced6; border-radius: 999px; padding: 6px 14px; margin: 0 0 12px; background: #fff; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; color: #374151; margin-top: 10px; }
+  td { padding: 7px 0; border-bottom: 1px solid #eef0f3; vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.d { white-space: nowrap; text-align: right; padding-left: 8px; }
+  .s { color: #6b7280; font-size: 13px; margin-top: 2px; }
+  .late { color: #b91c1c; font-weight: 700; }
+  .ok { color: #166534; font-weight: 700; }
+  .rmsg { font-size: 13px; margin-top: 8px; color: #166534; min-height: 16px; }
+  .rmsg.bad { color: #b91c1c; }
+  .empty { color: #555; }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="empty">Loading&hellip;</div></div>
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  var W = window.JFCustomWidget, wrap = document.getElementById('wrap');
+  var cfg = {}, state = { email: '', data: null, error: '', tries: 0 }, lastHeight = 0;
+
+  function text(v) { return v === undefined || v === null ? '' : String(v); }
+  function clean(v) { return text(v).replace(/\s+/g, ' ').trim(); }
+  function esc(s) { return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function digits(v) { return clean(v).replace(/\D/g, ''); }
+  function safeUrl(u) { u = clean(u); return /^https:\/\//i.test(u) ? u : ''; }
+
+  function readSettings() {
+    var s = {};
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    cfg.emailField = digits(s.emailField) || '3';
+    cfg.statusUrl = safeUrl(s.statusUrl);
+    cfg.statusKey = clean(s.statusKey);
+    cfg.homeUrl = safeUrl(s.homeUrl);
+  }
+  function resize() {
+    var h = Math.ceil(wrap.getBoundingClientRect().height) + 6;
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+  function show(html) { if (wrap.innerHTML !== html) wrap.innerHTML = html; resize(); setTimeout(resize, 300); }
+  function ask(extra) { return cfg.statusUrl + (cfg.statusUrl.indexOf('?') < 0 ? '?' : '&') + 'view=safety' + extra + '&e=' + encodeURIComponent(state.email); }
+
+  function readWho(done) {
+    try {
+      W.getFieldsValueById([cfg.emailField], function (res) {
+        ((res && res.data) || []).forEach(function (f) {
+          if (digits(f.selector || f.id) === cfg.emailField && clean(f.value)) state.email = clean(f.value).toLowerCase();
+        });
+        done();
+      });
+    } catch (e) { done(); }
+  }
+
+  function render() {
+    var d = state.data, home = cfg.homeUrl ? '<a class="home" href="' + esc(cfg.homeUrl) + '" target="_top">&#8592; NoisiV Home</a><br>' : '';
+    if (state.error) { show(home + '<div class="empty">' + esc(state.error) + '</div>'); return; }
+    if (!d) { show('<div class="empty">Loading&hellip;</div>'); return; }
+    if (!d.streams.length) { show(home + '<div class="empty">This page is for the people who post documents for signature. There is nothing here for you to do.</div>'); return; }
+    var html = home;
+    if (safeUrl(d.post)) html += '<a class="btn" href="' + esc(d.post) + '" target="_blank" rel="noopener">Post for signature</a>';
+    d.streams.forEach(function (s, i) {
+      var open = s.open || [];
+      html += '<div class="sec"><div class="hd"><span>' + esc(s.name) + '</span>' + (s.test ? '<span class="pill">TEST MODE</span>' : '') + '</div><div class="bd">' +
+        '<button class="btn light" type="button" data-r="' + i + '">Run Not Completed Report</button><div class="rmsg" id="rmsg' + i + '"></div>' +
+        (open.length ? '<table>' + open.map(function (o) {
+          var all = o.of && String(o.done) === String(o.of);
+          return '<tr><td>' + esc(o.title) + '<div class="s">' + (o.kind ? esc(o.kind) + ' &middot; ' : '') + '<span class="' + (o.late ? 'late' : '') + '">' + (o.late ? 'was due ' : 'sign by ') + esc(o.due) + '</span></div></td>' +
+            '<td class="d' + (all ? ' ok' : '') + '">' + esc(o.done) + ' of ' + esc(o.of) + ' signed</td></tr>';
+        }).join('') + '</table>' : '<div class="s" style="margin-top:10px;">Nothing is open. Everything posted has been signed or closed.</div>') +
+        '</div></div>';
+    });
+    show(html);
+    Array.prototype.forEach.call(wrap.querySelectorAll('button[data-r]'), function (b) {
+      b.addEventListener('click', function () {
+        var i = parseInt(b.getAttribute('data-r'), 10), s = d.streams[i], rm = document.getElementById('rmsg' + i);
+        b.disabled = true; rm.className = 'rmsg'; rm.textContent = 'Sending the report...'; resize();
+        fetch(ask((s.key === 'safety' ? '' : '&s=' + encodeURIComponent(s.key)) + '&report=1') + '&k=' + encodeURIComponent(s.rk), { method: 'GET', redirect: 'follow' }).then(function (r) { return r.json(); }).then(function (o) {
+          rm.className = 'rmsg' + (o && o.ok ? '' : ' bad'); rm.textContent = (o && o.msg) || (o && o.ok ? 'Report sent. Check your email.' : 'The report could not be sent.'); b.disabled = false; resize();
+        }).catch(function () { rm.className = 'rmsg bad'; rm.textContent = 'The report could not be sent. Please try again.'; b.disabled = false; resize(); });
+      });
+    });
+  }
+
+  function load() {
+    if (!cfg.statusUrl || !cfg.statusKey) { state.error = 'This page is not set up yet. Please try again in a few minutes.'; render(); return; }
+    if (!state.email) {
+      if (++state.tries > 12) { state.error = 'Your login was not found. Close this page and open it again from NoisiV.'; render(); return; }
+      setTimeout(function () { readWho(load); }, 500);
+      return;
+    }
+    fetch(ask('&admin=1') + '&k=' + encodeURIComponent(cfg.statusKey), { method: 'GET', redirect: 'follow' }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.ok) throw new Error('no');
+      d.streams = d.streams || [];
+      state.data = d; state.error = ''; render();
+    }).catch(function () {
+      if (!state.data) { state.error = 'This page could not be loaded right now. Close it and open it again.'; render(); }
+    });
+  }
+
+  W.subscribe('ready', function () {
+    readSettings();
+    var onBuilder = false;
+    try { onBuilder = !!W.isWidgetOnBuilder(); } catch (e) {}
+    if (onBuilder) { show('<div class="empty">The people who post see their posting button, open items and reports here.</div>'); return; }
+    render();
+    readWho(load);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden && state.email) load(); });
+  });
+  W.subscribe('submit', function () { try { W.sendSubmit({ valid: true, value: '' }); } catch (e) {} });
+  window.addEventListener('resize', resize);
+})();
+</script>
+</body>
+</html>
