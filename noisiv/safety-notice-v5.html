@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safety notice</title>
+<!--
+  NoisiV - "To-do strip" (v5)
+  A slim strip for the NoisiV home screen, sitting just above the tool buttons: one chip per tool that needs
+  something from the person looking at it (Safety, Company Required Signatures).  It sits inside a tiny sign-in-aware form, reads who is signed in from
+  the field single sign-on fills in, asks the Safety Sign-offs script how many topics that person still has to
+  sign, and shows an orange "Safety - N to sign" chip (tap = open the Safety page).  When there is nothing
+  to sign - or while it is still checking, or if it cannot check - it shows nothing at all and takes up no room.
+  It never shows anyone else's information and it cannot change anything.
+
+  Settings (on the widget):
+    emailField            - question number of the email field on the form
+    statusUrl, statusKey  - where to ask, and the key the script expects (same as "My safety topics")
+    openUrl               - the Safety page inside the app
+    iconUrl               - the icon the Safety button uses (shown in white on the chip)
+    coUrl, coIcon, coName - the same for Company Required Signatures (its page, its icon, the word on the chip)
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Inter, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 15px; color: #e5e7eb; }
+  #wrap { padding: 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { flex: 1 1 220px; display: flex; align-items: center; gap: 9px; min-height: 44px; box-sizing: border-box; padding: 8px 12px 8px 12px;
+          border-radius: 12px; background: #c2410c; border: 1px solid #ea580c; color: #fff !important; text-decoration: none; cursor: pointer; }
+  .chip img { flex: 0 0 auto; width: 22px; height: 22px; filter: brightness(0) invert(1); }
+  .chip b { font-size: 16px; font-weight: 700; white-space: nowrap; }
+  .chip .n { flex: 0 0 auto; min-width: 24px; height: 24px; padding: 0 7px; box-sizing: border-box; border-radius: 999px; background: #fff; color: #c2410c;
+             font-weight: 800; font-size: 14px; display: flex; align-items: center; justify-content: center; }
+  .chip .w { font-size: 14px; opacity: .95; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip .go { margin-left: auto; flex: 0 0 auto; font-size: 24px; line-height: 1; font-weight: 700; padding-left: 4px; }
+</style>
+</head>
+<body>
+<div id="wrap"></div>
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  var W = window.JFCustomWidget, wrap = document.getElementById('wrap');
+  var cfg = {}, state = { email: '', tries: 0, loaded: false, busy: false }, lastHeight = 0;
+
+  function text(v) { return v === undefined || v === null ? '' : String(v); }
+  function clean(v) { return text(v).replace(/\s+/g, ' ').trim(); }
+  function esc(s) { return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function digits(v) { return clean(v).replace(/\D/g, ''); }
+  function safeUrl(u) { u = clean(u); return /^https:\/\//i.test(u) ? u : ''; }
+
+  function readSettings() {
+    var s = {};
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    cfg.emailField = digits(s.emailField) || '3';
+    cfg.statusUrl = safeUrl(s.statusUrl);
+    cfg.statusKey = clean(s.statusKey);
+    cfg.openUrl = safeUrl(s.openUrl);
+    cfg.iconUrl = safeUrl(s.iconUrl);
+    cfg.coUrl = safeUrl(s.coUrl);
+    cfg.coIcon = safeUrl(s.coIcon);
+    cfg.coName = clean(s.coName) || 'Company';
+  }
+  function resize() {
+    var h = wrap.innerHTML ? Math.ceil(wrap.getBoundingClientRect().height) : 1;   // nothing to show = collapse to a hairline
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+  function show(html) { if (wrap.innerHTML !== html) wrap.innerHTML = html; resize(); setTimeout(resize, 300); }
+
+  function readWho(done) {
+    try {
+      W.getFieldsValueById([cfg.emailField], function (res) {
+        ((res && res.data) || []).forEach(function (f) {
+          if (digits(f.selector || f.id) === cfg.emailField && clean(f.value)) state.email = clean(f.value).toLowerCase();
+        });
+        done();
+      });
+    } catch (e) { done(); }
+  }
+
+  // one chip per tool that needs something; a tool with nothing due adds no chip, and no chips = nothing shown
+  function chip(o) {
+    var inner = (o.icon ? '<img src="' + esc(o.icon) + '" alt="" onerror="this.style.display=\'none\'">' : '') +
+      '<b>' + esc(o.name) + '</b><span class="n">' + esc(o.count) + '</span><span class="w">' + esc(o.what) + '</span><span class="go">&#8250;</span>';
+    return o.url ? '<a class="chip" href="' + esc(o.url) + '" target="_top">' + inner + '</a>' : '<div class="chip">' + inner + '</div>';
+  }
+  function render(d) {
+    // the script answers with a count per tool; an older script answers with the Safety list only
+    var counts = {}, chips = [];
+    if (d.tools) d.tools.forEach(function (t) { counts[t.key] = { n: parseInt(t.n, 10) || 0, late: parseInt(t.late, 10) || 0 }; });
+    else counts.safety = { n: d.due.length, late: d.due.filter(function (t) { return t.late; }).length };
+    var what = function (c) { return 'to sign' + (c.late ? ' \u00b7 ' + c.late + ' overdue' : ''); };
+    if (counts.safety && counts.safety.n) chips.push({ name: 'Safety', count: counts.safety.n, what: what(counts.safety), url: cfg.openUrl, icon: cfg.iconUrl });
+    if (counts.company && counts.company.n) chips.push({ name: cfg.coName, count: counts.company.n, what: what(counts.company), url: cfg.coUrl, icon: cfg.coIcon });
+    show(chips.length ? '<div class="chips">' + chips.map(chip).join('') + '</div>' : '');
+  }
+
+  function load() {
+    if (!cfg.statusUrl || !cfg.statusKey) { show(''); return; }
+    if (!state.email) {
+      if (++state.tries > 12) { show(''); return; }           // login not found: stay out of the way
+      setTimeout(function () { readWho(load); }, 500);
+      return;
+    }
+    if (state.busy) return;
+    state.busy = true;
+    var url = cfg.statusUrl + (cfg.statusUrl.indexOf('?') < 0 ? '?' : '&') + 'view=safety&mine=1&todo=1&e=' + encodeURIComponent(state.email) + '&k=' + encodeURIComponent(cfg.statusKey);
+    fetch(url, { method: 'GET', redirect: 'follow' }).then(function (r) { return r.json(); }).then(function (d) {
+      state.busy = false;
+      if (!d || !d.ok) throw new Error('no');
+      d.due = d.due || [];
+      state.loaded = true; render(d);
+    }).catch(function () {
+      state.busy = false;
+      if (!state.loaded) show('');                              // could not check: show nothing rather than a wrong answer
+    });
+  }
+
+  W.subscribe('ready', function () {
+    readSettings();
+    var onBuilder = false;
+    try { onBuilder = !!W.isWidgetOnBuilder(); } catch (e) {}
+    if (onBuilder) { show('<div class="chips"><div class="chip"><b>To-do strip</b><span class="w">each person sees what needs their attention</span></div></div>'); return; }
+    resize();
+    readWho(load);
+    // keep it fresh: when the person comes back to the home screen, and every 2 minutes while it is showing
+    document.addEventListener('visibilitychange', function () { if (!document.hidden && state.email) load(); });
+    window.addEventListener('focus', function () { if (state.email) load(); });
+    setInterval(function () { if (!document.hidden && state.email) load(); }, 120000);
+  });
+  W.subscribe('submit', function () { try { W.sendSubmit({ valid: true, value: '' }); } catch (e) {} });
+  window.addEventListener('resize', resize);
+})();
+</script>
+</body>
+</html>
