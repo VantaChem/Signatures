@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer Area</title>
+<!--
+  NoisiV / Vanta Advantage - "Customer Area" (v2)
+  mode "staff" (default): for VantaChem people.  It sits inside a small sign-in-aware form, reads who is signed in, and asks the tracker
+  script which customers that person may see (the "Customer Area" tab of the Customer Book: the reps listed on a
+  customer, plus the district managers of that customer's district).  Each customer shows a button that opens its
+  dashboard right here, and one that opens it full screen in a new tab.  The dashboard links come back from the
+  script only for the customers that person may see - none are stored in this page.
+  mode "customer": the same page inside the Vanta Advantage app, for a customer's own people.  It asks with ca=2 and
+  shows only the dashboards whose row lists that sign-in email under "Customer logins".  With one dashboard it opens
+  straight away.
+
+  Settings (on the widget):
+    emailField              - question number of the sign-in email on the form
+    statusUrl, statusKey    - where to ask, and the key the script expects
+    homeUrl                 - the NoisiV home screen (staff mode)
+    mode                    - "customer" inside Vanta Advantage; anything else = staff
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Inter, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 15px; color: #1f2937; }
+  #wrap { padding: 1px 1px 2px; }
+  .home { display: inline-block; color: #1f2937 !important; text-decoration: none; font-weight: 600; font-size: 14px; border: 1px solid #c9ced6; border-radius: 999px; padding: 6px 14px; margin: 0 0 12px; background: #fff; cursor: pointer; }
+  .card { border: 1px solid #d5d9df; border-radius: 10px; background: #fff; margin: 0 0 12px; padding: 12px 14px; }
+  .card .nm { font-weight: 700; font-size: 17px; color: #111827; }
+  .card .ds { color: #6b7280; font-size: 13px; margin: 2px 0 10px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn { flex: 1 1 150px; display: block; box-sizing: border-box; text-align: center; background: #1f2937; color: #fff !important; text-decoration: none; font-weight: 700; padding: 12px 14px; border-radius: 8px; border: 1px solid #1f2937; font-size: 15px; cursor: pointer; }
+  .btn.light { background: #fff; color: #1f2937 !important; }
+  .ttl { font-weight: 700; font-size: 18px; color: #111827; margin: 0 0 10px; }
+  .frame { position: relative; width: 100%; background: #e5e7eb; border: 1px solid #d5d9df; border-radius: 8px; overflow: hidden; margin: 0 0 12px; }
+  .frame iframe { position: absolute; left: 0; top: 0; width: 100%; height: 100%; border: 0; }
+  .empty { color: #555; }
+  .note { color: #6b7280; font-size: 13px; margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="empty">Loading&hellip;</div></div>
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  var W = window.JFCustomWidget, wrap = document.getElementById('wrap');
+  var cfg = {}, state = { email: '', data: null, error: '', tries: 0, open: -1 }, lastHeight = 0;
+
+  function text(v) { return v === undefined || v === null ? '' : String(v); }
+  function clean(v) { return text(v).replace(/\s+/g, ' ').trim(); }
+  function esc(s) { return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function digits(v) { return clean(v).replace(/\D/g, ''); }
+  function safeUrl(u) { u = clean(u); return /^https:\/\//i.test(u) ? u : ''; }
+  function embeddable(u) { return /^https:\/\/app\.powerbi\.com\/(view|reportEmbed)\?/i.test(clean(u)); }   // only Power BI is shown inside this page
+
+  function readSettings() {
+    var s = {};
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    cfg.emailField = digits(s.emailField) || '3';
+    cfg.statusUrl = safeUrl(s.statusUrl);
+    cfg.statusKey = clean(s.statusKey);
+    cfg.homeUrl = safeUrl(s.homeUrl);
+    cfg.customer = clean(s.mode).toLowerCase() === 'customer';
+  }
+  function resize() {
+    var h = Math.ceil(wrap.getBoundingClientRect().height) + 6;
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+  function show(html) { if (wrap.innerHTML !== html) wrap.innerHTML = html; resize(); setTimeout(resize, 300); }
+
+  function readWho(done) {
+    try {
+      W.getFieldsValueById([cfg.emailField], function (res) {
+        ((res && res.data) || []).forEach(function (f) {
+          if (digits(f.selector || f.id) === cfg.emailField && clean(f.value)) state.email = clean(f.value).toLowerCase();
+        });
+        done();
+      });
+    } catch (e) { done(); }
+  }
+
+  function frameHeight() {            // the dashboard is 16:9; Power BI adds about 60px of its own bars under it
+    var w = Math.max(240, wrap.getBoundingClientRect().width || 600);
+    return Math.round(w * 9 / 16) + 60;
+  }
+
+  function render() {
+    var d = state.data, home = cfg.homeUrl && !cfg.customer ? '<a class="home" href="' + esc(cfg.homeUrl) + '" target="_top">&#8592; NoisiV Home</a><br>' : '';
+    if (state.error) { show(home + '<div class="empty">' + esc(state.error) + '</div>'); return; }
+    if (!d) { show('<div class="empty">Loading&hellip;</div>'); return; }
+    var list = d.customers || [];
+    if (!list.length) {
+      show(home + '<div class="empty">' + (cfg.customer ? 'No dashboard is set up for this login yet. Please contact your VantaChem representative.' : 'No customer dashboards are assigned to you yet. Mark Main keeps the list.') + '</div>');
+      return;
+    }
+    if (cfg.customer && list.length === 1) state.open = 0;             // a customer with one dashboard goes straight to it
+
+    if (state.open >= 0 && list[state.open]) {                       // one customer's dashboard, right here
+      var c = list[state.open], u = safeUrl(c.url);
+      var single = cfg.customer && list.length === 1;
+      var html = (single ? '' : '<a class="home" href="#" id="back">&#8592; ' + (cfg.customer ? 'My dashboards' : 'My customers') + '</a>') + '<div class="ttl">' + esc(c.name) + '</div>';
+      if (u && embeddable(u)) html += '<div class="frame" id="frame" style="height:' + frameHeight() + 'px;"><iframe src="' + esc(u) + '" title="' + esc(c.name) + ' dashboard" allowfullscreen="true"></iframe></div>' +
+        '<div class="note">It can take a few seconds to appear. Turn your phone sideways for a bigger view.</div>';
+      if (u) html += '<div class="row"><a class="btn" href="' + esc(u) + '" target="_blank" rel="noopener">Open full screen</a></div>';
+      show(html);
+      var back = document.getElementById('back');
+      if (back) back.addEventListener('click', function (ev) { ev.preventDefault(); state.open = -1; render(); });
+      return;
+    }
+
+    var out = home + (list.length > 1 ? '<div class="note">' + list.length + (cfg.customer ? ' dashboards' : ' customers') + '</div>' : '');
+    list.forEach(function (c, i) {
+      var u = safeUrl(c.url);
+      out += '<div class="card"><div class="nm">' + esc(c.name) + '</div><div class="ds">' + (c.district && !cfg.customer ? 'District ' + esc(c.district) : '&nbsp;') + '</div><div class="row">' +
+        (u && embeddable(u) ? '<a class="btn" href="#" data-i="' + i + '">View dashboard</a>' : '') +
+        (u ? '<a class="btn light" href="' + esc(u) + '" target="_blank" rel="noopener">Open full screen</a>' : '<span class="empty">No dashboard link yet.</span>') +
+        '</div></div>';
+    });
+    show(out);
+    Array.prototype.forEach.call(wrap.querySelectorAll('a[data-i]'), function (a) {
+      a.addEventListener('click', function (ev) { ev.preventDefault(); state.open = parseInt(a.getAttribute('data-i'), 10); render(); });
+    });
+  }
+
+  function load() {
+    if (!cfg.statusUrl || !cfg.statusKey) { state.error = 'This page is not set up yet. Please try again in a few minutes.'; render(); return; }
+    if (!state.email) {
+      if (++state.tries > 12) { state.error = cfg.customer ? 'We could not tell who is signed in. Close the app and open it again.' : 'Your login was not found. Close this page and open it again from NoisiV.'; render(); return; }
+      setTimeout(function () { readWho(load); }, 500);
+      return;
+    }
+    var url = cfg.statusUrl + (cfg.statusUrl.indexOf('?') < 0 ? '?' : '&') + 'view=safety&ca=' + (cfg.customer ? '2' : '1') + '&e=' + encodeURIComponent(state.email) + '&k=' + encodeURIComponent(cfg.statusKey);
+    fetch(url, { method: 'GET', redirect: 'follow' }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.ok) { state.error = (d && d.msg) || (cfg.customer ? 'Your dashboard could not be loaded right now. Please try again in a few minutes.' : 'Your customers could not be loaded right now. Please try again in a few minutes.'); render(); return; }
+      state.data = d; state.error = ''; render();
+    }).catch(function () { state.error = (cfg.customer ? 'Your dashboard' : 'Your customers') + ' could not be loaded right now. Check your connection and try again.'; render(); });
+  }
+
+  window.addEventListener('resize', function () {
+    var f = document.getElementById('frame');
+    if (f) f.style.height = frameHeight() + 'px';
+    resize();
+  });
+
+  W.subscribe('ready', function () {
+    readSettings();
+    var onBuilder = false;
+    try { onBuilder = !!W.isWidgetOnBuilder(); } catch (e) {}
+    if (onBuilder) { show('<div class="empty">Each person sees the dashboards assigned to them here.</div>'); return; }
+    render();
+    readWho(load);
+  });
+  W.subscribe('submit', function () { try { W.sendSubmit({ valid: true, value: '' }); } catch (e) {} });
+})();
+</script>
+</body>
+</html>
