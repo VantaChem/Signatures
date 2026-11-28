@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BOL - products on the truck</title>
+<!--
+  VantaChem / NoisiV - "Products on the truck" block for the Jotform "Bill of Lading" form.
+
+  What it does: the driver (or the office) adds each product on the truck - product, container, how many,
+  gallons in each - and this block works out the weights, shows the DOT description of every hazmat line,
+  says which placards the load needs, and asks the load-check questions that fit the load.
+  The answer is handed back to the form; the DOT script reads it, works everything out again from the
+  product list (so the paper never depends on this page's arithmetic) and prints the Bill of Lading.
+
+  This page holds NO product data. The products and containers arrive from the form itself (the "data"
+  setting), which the DOT script copies from the Products and Containers tabs of the "VantaChem BOL Builder" sheet.
+
+  Placard rule used here and in the script (49 CFR 172.504):
+    a hazard class needs its placard when
+      - the product is a "placard at any amount" (Table 1) material, or
+      - any of it is in a bulk container (over 119 gallons - totes), or
+      - ALL the hazmat in drums and pails on the truck together weighs 1,001 lb or more (gross).
+
+  Settings (set on the form field, not here):
+    data          JSON: { "p": [ { id, n, reg, un, psn, cls, pg, sg, pl, t1, rq, mp } ], "c": [ { id, n, cap, fill, tare, pkg } ] }
+    maxLines      most lines one BOL can have (they must fit one page) - default 8
+    summaryField  (optional) id of a text area that receives the lines in plain words
+    placardField  (optional) id of a text field that receives "Placards required: ..."
+-->
+<script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 15px; color: #222; }
+  #wrap { padding: 1px; }
+  .note { color: #6b7280; font-size: 13px; padding: 4px 0 6px; }
+  .line { background: #fff; border: 1px solid #c9cdc4; border-left: 5px solid #c9cdc4; border-radius: 6px; padding: 10px 10px 8px; margin: 0 0 10px; }
+  .line.haz { border-left-color: #b42318; }
+  .line.ok { border-left-color: #799B2C; }
+  .grid { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+  .f { display: flex; flex-direction: column; min-width: 0; }
+  .f label { font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: .3px; color: #4F5251; margin: 0 0 3px; }
+  .f.prod { flex: 1 1 100%; }
+  .f.cont { flex: 3 1 150px; }
+  .f.qty { flex: 1 1 64px; }
+  .f.gal { flex: 1 1 84px; }
+  .f.rm { flex: 0 0 auto; }
+  select, input[type=number] { font: inherit; font-size: 16px; color: #222; background: #fff; border: 1px solid #9aa094; border-radius: 5px; padding: 9px 8px; width: 100%; box-sizing: border-box; min-height: 42px; }
+  select:focus, input:focus { outline: 2px solid #799B2C; outline-offset: 0; border-color: #799B2C; }
+  .bad select, .bad input { border-color: #b42318; background: #fff6f5; }
+  button { font: inherit; cursor: pointer; }
+  .x { border: 1px solid #c9cdc4; background: #f6f7f4; color: #4F5251; border-radius: 5px; min-height: 42px; width: 42px; font-size: 18px; line-height: 1; }
+  .desc { margin: 8px 0 0; font-size: 13px; line-height: 1.35; color: #374151; }
+  .desc b { color: #111; }
+  .tag { display: inline-block; font-size: 11px; font-weight: bold; letter-spacing: .4px; padding: 2px 6px; border-radius: 3px; margin-right: 6px; vertical-align: 1px; }
+  .tag.hm { background: #b42318; color: #fff; }
+  .tag.nr { background: #e7f0d2; color: #3f5512; }
+  .w { color: #4b5563; }
+  .err { color: #b42318; font-size: 13px; font-weight: bold; margin: 6px 0 0; }
+  .add { display: block; width: 100%; box-sizing: border-box; border: 1px dashed #799B2C; background: #f4f8e9; color: #3f5512; font-weight: bold; border-radius: 6px; padding: 12px; font-size: 15px; margin: 0 0 12px; }
+  .add[disabled] { border-color: #c9cdc4; background: #f3f4f1; color: #8b8f88; cursor: default; }
+  .tot { background: #eef3e1; border: 1px solid #799B2C; border-radius: 6px; padding: 10px 12px; font-weight: bold; margin: 0 0 10px; }
+  .tot span { font-weight: normal; color: #4b5563; }
+  .plac { border-radius: 6px; padding: 10px 12px; margin: 0 0 12px; border: 2px solid #799B2C; background: #f4f8e9; }
+  .plac.req { border-color: #b42318; background: #fff6f5; }
+  .plac .h { font-weight: bold; font-size: 16px; }
+  .plac.req .h { color: #b42318; }
+  .plac .g { font-size: 13px; margin-top: 5px; color: #374151; }
+  .plac .g b { color: #111; }
+  .chk { background: #fff; border: 1px solid #c9cdc4; border-radius: 6px; margin: 0 0 4px; }
+  .chk .hd { background: #4F5251; color: #fff; font-weight: bold; font-size: 13px; letter-spacing: .3px; padding: 7px 12px; border-radius: 5px 5px 0 0; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid #e6e8e2; }
+  .row:first-of-type { border-top: 0; }
+  .row .q { flex: 1 1 220px; font-size: 14px; line-height: 1.3; }
+  .row .q small { display: block; color: #6b7280; font-size: 12px; margin-top: 2px; }
+  .seg { display: flex; gap: 6px; flex: 0 0 auto; }
+  .seg button { border: 1px solid #9aa094; background: #fff; color: #222; border-radius: 5px; padding: 9px 14px; min-width: 56px; font-size: 15px; }
+  .seg button.on { background: #799B2C; border-color: #5f7c1f; color: #fff; font-weight: bold; }
+  .seg button.on.no { background: #b42318; border-color: #8f1b12; }
+  .row.bad { background: #fff6f5; }
+  .row .why { flex: 1 1 100%; color: #b42318; font-size: 13px; font-weight: bold; }
+  @media (min-width: 640px) {
+    .f.prod { flex: 4 1 220px; }
+    .f.cont { flex: 3 1 170px; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="note">Loading the product list…</div></div>
+<script>
+(function () {
+  'use strict';
+  var W = window.JFCustomWidget;
+  var el = document.getElementById('wrap');
+
+  /* ---------- small helpers ---------- */
+  function text(v) { return v === null || v === undefined ? '' : String(v); }
+  function unesc(s) { return text(s).replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'); }
+  function esc(s) { return text(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function fmt(n) { return Math.round(Number(n) || 0).toLocaleString('en-US'); }
+  function fmt1(n) { return (Math.round((Number(n) || 0) * 10) / 10).toLocaleString('en-US'); }
+
+  /* ---------- the arithmetic and the placard rule (the DOT script has the same code and has the last word) ---------- */
+  /*CALC-START*/
+  var BOL_RULE = { LB_PER_GAL_WATER: 8.345, BULK_OVER_GAL: 119, PLACARD_LB: 1001 };
+  function bolLbGal(p) { return p && p.sg ? Math.round(p.sg * BOL_RULE.LB_PER_GAL_WATER * 100) / 100 : 0; }
+  function bolDesc(p) {
+    if (!p) return '';
+    if (!p.reg) return 'Not regulated by DOT';
+    var s = p.un + ', ' + p.psn + ', ' + p.cls + ', PG ' + p.pg, x = [];
+    if (p.rq) x.push('RQ');
+    if (p.mp) x.push('Marine Pollutant');
+    return x.length ? s + ' - ' + x.join(', ') : s;
+  }
+  /** One line: l = { p: product id, c: container id, q: how many, g: gallons in each }.  P and C are the lists by id. */
+  function bolLine(l, P, C) {
+    var p = P[l.p] || null, c = C[l.c] || null, q = Math.floor(Number(l.q) || 0), g = Number(l.g) || 0;
+    var lbGal = bolLbGal(p), net = p && c ? g * lbGal * q : 0, tare = c ? (Number(c.tare) || 0) * q : 0;
+    return { p: p, c: c, q: q, g: g, lbGal: lbGal, totalGal: g * q, net: net, tare: tare, gross: net + tare,
+             haz: !!(p && p.reg), bulk: !!(c && Number(c.cap) > BOL_RULE.BULK_OVER_GAL), desc: bolDesc(p) };
+  }
+  /** The whole load: totals, and for every hazard class whether its placard is required and why. */
+  function bolLoad(lines, P, C) {
+    var t = { rows: [], pkg: 0, hazPkg: 0, gal: 0, hazGal: 0, net: 0, tare: 0, gross: 0, nonBulkHaz: 0, haz: false, groups: [], required: [], placards: 'None required' }, by = {};
+    lines.forEach(function (l) {
+      var r = bolLine(l, P, C);
+      if (!r.p || !r.c || r.q < 1 || !(r.g > 0)) return;
+      t.rows.push(r);
+      t.pkg += r.q; t.gal += r.totalGal; t.net += r.net; t.tare += r.tare; t.gross += r.gross;
+      if (!r.haz) return;
+      t.haz = true; t.hazPkg += r.q; t.hazGal += r.totalGal;
+      var k = r.p.pl || ('Class ' + r.p.cls), g = by[k];
+      if (!g) { g = by[k] = { name: k, gross: 0, table1: false, bulk: false }; t.groups.push(g); }
+      g.gross += r.gross;
+      if (r.p.t1) g.table1 = true;
+      if (r.bulk) g.bulk = true; else t.nonBulkHaz += r.gross;
+    });
+    var over = Math.round(t.nonBulkHaz) >= BOL_RULE.PLACARD_LB;
+    t.groups.forEach(function (g) {
+      g.required = g.table1 || g.bulk || over;
+      g.why = g.table1 ? 'this material is placarded at any amount'
+        : g.bulk ? 'some of it is in a container over ' + BOL_RULE.BULK_OVER_GAL + ' gal'
+        : over ? 'the hazmat in drums and pails on the truck totals 1,001 lb or more'
+        : 'only in drums and pails, and the hazmat in drums and pails totals under 1,001 lb';
+      if (g.required) t.required.push(g.name);
+    });
+    if (t.required.length) t.placards = t.required.join(', ');
+    return t;
+  }
+  /** What the load-check answers must be for this load.  chk = { secure, sds, placarded, seg, hx }.  Gives [ [key, message] ]. */
+  function bolCheckProblems(chk, load) {
+    var out = [], a = function (k) { return String((chk && chk[k]) || ''); };
+    if (a('secure') !== 'Yes') out.push(['secure', a('secure') ? 'Fix the load before you leave - this must be Yes.' : 'Answer this question.']);
+    if (load.haz) {
+      if (a('sds') !== 'Yes') out.push(['sds', a('sds') ? 'Hazmat is on this load - the SDS / ERG pages must be with this paper.' : 'Answer this question.']);
+      if (a('seg') !== 'Yes' && a('seg') !== 'N/A') out.push(['seg', a('seg') ? 'A mixed hazmat load has to be checked before you leave.' : 'Answer this question.']);
+    }
+    if (load.required.length) {
+      if (a('placarded') !== 'Yes') out.push(['placarded', a('placarded') ? 'Placards are required on this load - put them on all four sides first.' : 'Answer this question.']);
+      if (a('hx') !== 'Yes') out.push(['hx', a('hx') ? 'A placarded load needs a driver with the hazmat (H or X) endorsement.' : 'Answer this question.']);
+    }
+    return out;
+  }
+  /** The answers as they are kept: the questions that do not apply to this load are N/A. */
+  function bolCheckFinal(chk, load) {
+    var a = function (k) { return String((chk && chk[k]) || ''); };
+    return { secure: a('secure'), sds: load.haz ? a('sds') : 'N/A', seg: load.haz ? a('seg') : 'N/A',
+             placarded: load.required.length ? a('placarded') : 'N/A', hx: load.required.length ? a('hx') : 'N/A' };
+  }
+  /*CALC-END*/
+
+  /* ---------- settings ---------- */
+  var cfg = { ok: false, max: 8, summaryField: '', placardField: '' };
+  var P = {}, C = {}, pList = [], cList = [];
+  function readSettings() {
+    var s = {};
+    try { s = W.getWidgetSettings() || {}; } catch (e) { s = {}; }
+    cfg.max = Math.max(1, Math.min(12, parseInt(s.maxLines, 10) || 8));
+    cfg.summaryField = text(s.summaryField).replace(/\D/g, '');
+    cfg.placardField = text(s.placardField).replace(/\D/g, '');
+    var d = s.data;                    // the form hands the list over already unpacked; older set-ups hand it over as text
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { try { d = JSON.parse(unesc(d)); } catch (e2) { d = null; } } }
+    take(d);
+  }
+  function take(d) {
+    P = {}; C = {}; pList = []; cList = [];
+    if (d && d.p && d.c) {
+      d.p.forEach(function (p) { if (p && p.id && p.n) { P[p.id] = p; pList.push(p); } });
+      d.c.forEach(function (c) { if (c && c.id && c.n) { C[c.id] = c; cList.push(c); } });
+    }
+    pList.sort(function (a, b) { return String(a.n).toLowerCase() < String(b.n).toLowerCase() ? -1 : 1; });
+    cfg.ok = pList.length > 0 && cList.length > 0;
+  }
+
+  /* ---------- what has been entered ---------- */
+  var state = { lines: [{ p: '', c: '', q: '1', g: '' }], chk: { secure: '', sds: '', placarded: '', seg: '', hx: '' }, tried: false };
+  function blankLine(l) { return !l.p && !l.c && !text(l.g); }
+  function lineProblem(l) {
+    if (blankLine(l)) return '';
+    var p = P[l.p], c = C[l.c], q = Number(l.q), g = Number(l.g);
+    if (!p) return 'Pick the product.';
+    if (!c) return 'Pick the container.';
+    if (!(q >= 1) || Math.floor(q) !== q || q > 500) return 'How many containers? Use a whole number.';
+    if (!(g > 0)) return 'How many gallons are in each one?';
+    if (g > Number(c.cap)) return 'That is more than a ' + c.n + ' holds (' + c.cap + ' gal).';
+    if (!p.sg) return 'There is no weight per gallon on file for ' + p.n + '. Ask the office to add it to the product list.';
+    return '';
+  }
+  function usedLines() { return state.lines.filter(function (l) { return !blankLine(l); }); }
+  function load() { return bolLoad(usedLines().filter(function (l) { return !lineProblem(l); }), P, C); }
+  function whatIsMissing() {
+    if (!cfg.ok) return 'The product list could not be loaded. Close this page and open it again.';
+    var used = usedLines();
+    if (!used.length) return 'Add at least one product.';
+    for (var i = 0; i < state.lines.length; i++) { var m = lineProblem(state.lines[i]); if (m) return 'Product line ' + (i + 1) + ': ' + m; }
+    var probs = bolCheckProblems(state.chk, load());
+    if (probs.length) return 'Load check: ' + probs[0][1];
+    return '';
+  }
+  function currentValue() {
+    var used = usedLines();
+    if (!used.length) return '';
+    var t = load(), chk = bolCheckFinal(state.chk, t);
+    return JSON.stringify({ v: 1,
+      lines: used.map(function (l) { var p = P[l.p] || {}, c = C[l.c] || {}; return { p: l.p, pn: p.n || '', c: l.c, cn: c.n || '', q: Math.floor(Number(l.q) || 0), g: Number(l.g) || 0 }; }),
+      chk: chk, haz: t.haz ? 'Yes' : 'No', plac: t.placards, pkg: t.pkg, gal: Math.round(t.gal * 10) / 10, gross: Math.round(t.gross) });
+  }
+  function summaryText() {
+    var t = load();
+    if (!t.rows.length) return '';
+    return t.rows.map(function (r) {
+      return r.q + ' x ' + r.c.n + ' - ' + r.p.n + ' - ' + fmt1(r.totalGal) + ' gal - ' + fmt(r.gross) + ' lb' + (r.haz ? ' - HAZMAT ' + r.desc : '');
+    }).join('\n') + '\nTotal: ' + fmt(t.pkg) + ' pkg, ' + fmt1(t.gal) + ' gal, ' + fmt(t.gross) + ' lb gross\nPlacards required: ' + t.placards;
+  }
+  function loadSaved(v) {
+    var o = null;
+    try { o = JSON.parse(text(v)); } catch (e) { try { o = JSON.parse(unesc(v)); } catch (e2) { o = null; } }
+    if (!o || !o.lines || !o.lines.length) return false;
+    state.lines = o.lines.map(function (l) { return { p: text(l.p), c: text(l.c), q: text(l.q || 1), g: text(l.g || '') }; });
+    if (o.chk) ['secure', 'sds', 'placarded', 'seg', 'hx'].forEach(function (k) { state.chk[k] = o.chk[k] === 'N/A' && k !== 'seg' ? '' : text(o.chk[k]); });
+    return true;
+  }
+
+  /* ---------- telling the form ---------- */
+  var lastSent = null, pubTimer = null;
+  function publish() {
+    var v = currentValue(), miss = v ? whatIsMissing() : '';
+    var sig = v + '\n' + miss;
+    if (sig === lastSent) return v;
+    lastSent = sig;
+    try {
+      if (!v) W.sendData({ value: '' });
+      else W.sendData({ value: v });
+    } catch (e) {}
+    var set = [];
+    if (cfg.summaryField) set.push({ id: cfg.summaryField, value: summaryText() });
+    if (cfg.placardField) { var t = load(); set.push({ id: cfg.placardField, value: t.rows.length ? t.placards : '' }); }
+    if (set.length) { try { W.setFieldsValueById(set); } catch (e) {} }
+    return v;
+  }
+  function publishSoon() { clearTimeout(pubTimer); pubTimer = setTimeout(publish, 250); }
+
+  /* ---------- drawing ---------- */
+  var lastHeight = 0;
+  function fit() {
+    var h = Math.max(60, Math.ceil(el.getBoundingClientRect().height) + 6);
+    if (h !== lastHeight) { lastHeight = h; try { W.requestFrameResize({ height: h }); } catch (e) {} }
+  }
+  function opts(list, value, placeholder, label) {
+    var h = '<option value="">' + esc(placeholder) + '</option>';
+    list.forEach(function (o) { h += '<option value="' + esc(o.id) + '"' + (o.id === value ? ' selected' : '') + '>' + esc(label(o)) + '</option>'; });
+    return h;
+  }
+  function lineInfo(l) {
+    var p = P[l.p], c = C[l.c];
+    if (!p) return '';
+    var r = bolLine(l, P, C), h = '';
+    h += p.reg ? '<span class="tag hm">HAZMAT</span><b>' + esc(r.desc) + '</b>' : '<span class="tag nr">NOT REGULATED</span>';
+    var bits = [];
+    if (r.lbGal) bits.push(r.lbGal + ' lb/gal');
+    if (c && r.q >= 1 && r.g > 0) { bits.push(fmt1(r.totalGal) + ' gal'); bits.push(fmt(r.gross) + ' lb gross'); }
+    if (bits.length) h += '<div class="w">' + esc(bits.join(' · ')) + '</div>';
+    return h;
+  }
+  function lineHtml(l, i) {
+    var miss = state.tried ? lineProblem(l) : '', p = P[l.p];
+    var cls = 'line' + (p ? (p.reg ? ' haz' : ' ok') : '') + (miss ? ' bad' : '');
+    return '<div class="' + cls + '" data-i="' + i + '"><div class="grid">' +
+      '<div class="f prod"><label>Product</label><select data-k="p">' + opts(pList, l.p, 'Pick the product', function (o) { return o.n + (o.reg ? '  (hazmat)' : ''); }) + '</select></div>' +
+      '<div class="f cont"><label>Container</label><select data-k="c">' + opts(cList, l.c, 'Pick the container', function (o) { return o.n; }) + '</select></div>' +
+      '<div class="f qty"><label>How many</label><input type="number" inputmode="numeric" min="1" step="1" data-k="q" value="' + esc(l.q) + '"></div>' +
+      '<div class="f gal"><label>Gal in each</label><input type="number" inputmode="decimal" min="0" step="any" data-k="g" value="' + esc(l.g) + '"></div>' +
+      (state.lines.length > 1 ? '<div class="f rm"><button type="button" class="x" data-rm="1" aria-label="Remove this line">&times;</button></div>' : '') +
+      '</div><div class="desc" data-info="1">' + lineInfo(l) + '</div>' + (miss ? '<div class="err">' + esc(miss) + '</div>' : '') + '</div>';
+  }
+  function totalsHtml(t) {
+    if (!t.rows.length) return '';
+    return '<div class="tot">' + fmt(t.pkg) + (t.pkg === 1 ? ' package' : ' packages') + ' · ' + fmt1(t.gal) + ' gal · ' + fmt(t.gross) + ' lb gross <span>(containers included)</span></div>';
+  }
+  function placardHtml(t) {
+    if (!t.rows.length) return '';
+    if (!t.haz) return '<div class="plac"><div class="h">No hazmat on this load - no placards</div></div>';
+    var rows = t.groups.map(function (g) {
+      return '<div class="g"><b>' + esc(g.name) + '</b> - ' + fmt(g.gross) + ' lb - ' + (g.required ? 'REQUIRED: ' : 'not required: ') + esc(g.why) + '</div>';
+    }).join('');
+    return t.required.length
+      ? '<div class="plac req"><div class="h">PLACARDS REQUIRED: ' + esc(t.placards) + '</div>' + rows + '</div>'
+      : '<div class="plac"><div class="h">Hazmat on board - no placards required</div>' + rows + '</div>';
+  }
+  var QUESTIONS = {
+    secure: ['Load is secured, containers are closed, nothing is leaking', '', ['Yes', 'No']],
+    sds: ['SDS / ERG pages for every hazmat on board are with this paper', '', ['Yes', 'No']],
+    seg: ['Hazmat that must be kept apart is kept apart', 'N/A = only one hazard class on board', ['Yes', 'No', 'N/A']],
+    placarded: ['Placards are on all four sides of the vehicle', '', ['Yes', 'No']],
+    hx: ['The driver holds the hazmat (H or X) endorsement', '', ['Yes', 'No']]
+  };
+  function checksHtml(t) {
+    if (!t.rows.length) return '';
+    var keys = ['secure'];
+    if (t.haz) keys.push('sds', 'seg');
+    if (t.required.length) keys.push('placarded', 'hx');
+    var probs = {};
+    if (state.tried) bolCheckProblems(state.chk, t).forEach(function (p) { probs[p[0]] = p[1]; });
+    return '<div class="chk"><div class="hd">LOAD CHECK - BEFORE YOU LEAVE</div>' + keys.map(function (k) {
+      var q = QUESTIONS[k], cur = state.chk[k];
+      return '<div class="row' + (probs[k] ? ' bad' : '') + '"><div class="q">' + esc(q[0]) + (q[1] ? '<small>' + esc(q[1]) + '</small>' : '') + '</div><div class="seg">' +
+        q[2].map(function (o) { return '<button type="button" data-chk="' + k + '" data-v="' + o + '" class="' + (cur === o ? 'on' + (o === 'No' ? ' no' : '') : '') + '">' + o + '</button>'; }).join('') +
+        '</div>' + (probs[k] ? '<div class="why">' + esc(probs[k]) + '</div>' : '') + '</div>';
+    }).join('') + '</div>';
+  }
+  function draw() {
+    if (!cfg.ok) { el.innerHTML = '<div class="note">The product list could not be loaded. Close this page and open it again.</div>'; fit(); return; }
+    var t = load(), full = state.lines.length >= cfg.max;
+    el.innerHTML = '<div id="lines">' + state.lines.map(lineHtml).join('') + '</div>' +
+      '<button type="button" class="add" id="add"' + (full ? ' disabled' : '') + '>' + (full ? 'One BOL holds ' + cfg.max + ' lines - make a second BOL for the rest' : '+ Add another product') + '</button>' +
+      '<div id="sum">' + totalsHtml(t) + placardHtml(t) + checksHtml(t) + '</div>';
+    fit();
+  }
+  /** After typing: refresh only the parts below the boxes, so the keyboard and the cursor stay where they are. */
+  function refresh() {
+    var t = load();
+    Array.prototype.forEach.call(el.querySelectorAll('.line'), function (box) {
+      var l = state.lines[+box.getAttribute('data-i')], p = l && P[l.p];
+      if (!l) return;
+      var info = box.querySelector('[data-info]'); if (info) info.innerHTML = lineInfo(l);
+      box.className = 'line' + (p ? (p.reg ? ' haz' : ' ok') : '') + (state.tried && lineProblem(l) ? ' bad' : '');
+    });
+    var sum = document.getElementById('sum');
+    if (sum) sum.innerHTML = totalsHtml(t) + placardHtml(t) + checksHtml(t);
+    fit();
+  }
+
+  el.addEventListener('change', function (ev) {
+    var t = ev.target, box = t.closest ? t.closest('.line') : null, k = t.getAttribute && t.getAttribute('data-k');
+    if (!box || !k) return;
+    var l = state.lines[+box.getAttribute('data-i')];
+    if (!l) return;
+    l[k] = t.value;
+    if (k === 'c') {                       // a new container: start from a full one
+      var c = C[l.c];
+      l.g = c ? String(c.fill) : '';
+      var g = box.querySelector('[data-k="g"]'); if (g) g.value = l.g;
+    }
+    if (state.tried) draw(); else refresh();
+    publishSoon();
+  });
+  el.addEventListener('input', function (ev) {
+    var t = ev.target, box = t.closest ? t.closest('.line') : null, k = t.getAttribute && t.getAttribute('data-k');
+    if (!box || (k !== 'q' && k !== 'g')) return;
+    var l = state.lines[+box.getAttribute('data-i')];
+    if (!l) return;
+    l[k] = t.value;
+    refresh();
+    publishSoon();
+  });
+  el.addEventListener('click', function (ev) {
+    var t = ev.target;
+    if (!t || !t.getAttribute) return;
+    if (t.id === 'add') {
+      if (state.lines.length < cfg.max) { state.lines.push({ p: '', c: '', q: '1', g: '' }); draw(); publishSoon(); }
+      return;
+    }
+    if (t.getAttribute('data-rm')) {
+      var box = t.closest('.line');
+      if (box && state.lines.length > 1) { state.lines.splice(+box.getAttribute('data-i'), 1); draw(); publishSoon(); }
+      return;
+    }
+    var k = t.getAttribute('data-chk');
+    if (k) { state.chk[k] = t.getAttribute('data-v'); refresh(); publishSoon(); }
+  });
+  try { if (window.ResizeObserver) new ResizeObserver(function () { fit(); }).observe(el); } catch (e) {}
+  window.addEventListener('resize', fit);
+
+  /* ---------- start ---------- */
+  var booted = false;
+  function boot(data) {
+    var first = !booted;
+    booted = true;
+    readSettings();
+    var onBuilder = false;
+    try { onBuilder = !!W.isWidgetOnBuilder(); } catch (e) {}
+    if (onBuilder) { el.innerHTML = '<div class="note">Products on the truck: product, container, how many and gallons - with weights, placards and the load check.</div>'; fit(); return; }
+    if (first && data && data.value) { try { if (loadSaved(data.value)) lastSent = null; } catch (e) {} }
+    draw();
+    if (usedLines().length) publish();
+  }
+  if (W && W.subscribe) {
+    W.subscribe('ready', boot);
+    W.subscribe('submit', function () {
+      clearTimeout(pubTimer);
+      var v = currentValue(), miss = whatIsMissing();
+      if (!v || miss) {
+        state.tried = true;
+        draw();
+        try { W.sendSubmit(miss ? { valid: false, value: v, error: { msg: miss } } : { valid: false, value: '' }); } catch (e) {}
+        if (v) setTimeout(function () { lastSent = null; publish(); }, 600);      // the form empties the field when told "not ready" - hand the lines back
+        return;
+      }
+      lastSent = v + '\n';
+      try { W.sendSubmit({ valid: true, value: v }); } catch (e) {}
+    });
+  }
+
+  // for checking the page on its own (no product data lives here - the checker hands a list in)
+  window.__bol = { state: state, cfg: cfg, take: take, draw: draw, load: load, value: currentValue, missing: whatIsMissing, summary: summaryText,
+                   calc: { line: bolLine, load: bolLoad, problems: bolCheckProblems, final: bolCheckFinal, desc: bolDesc, lbGal: bolLbGal } };
+})();
+</script>
+</body>
+</html>
